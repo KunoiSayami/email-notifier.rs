@@ -1,0 +1,8 @@
+[telegram]
+bot_token = "123456789:ABC-YourBotTokenHere"
+
+[database]
+path = "email-notifier.db"
+
+[log]
+level = "info"

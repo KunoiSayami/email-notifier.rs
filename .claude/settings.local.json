@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

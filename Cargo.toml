@@ -1,0 +1,46 @@
+[package]
+name = "email-notifier"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "email-notifier"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# IMAP
+async-imap = "0.11"
+async-tls = "0.12"
+
+# Telegram bot
+teloxide = { version = "0.17", features = ["macros", "rustls"] }
+
+# Database
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Config file
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# File watching (config reload)
+notify = "7"
+
+# Email parsing
+mailparse = "0.15"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }

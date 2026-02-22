@@ -10,6 +10,7 @@ pub struct Account {
     username: String,
     password: String,
     chat_id: i64,
+    #[allow(unused)]
     created_at: String,
 }
 
@@ -42,6 +43,7 @@ impl Account {
         self.chat_id
     }
 
+    #[allow(unused)]
     pub fn created_at(&self) -> &str {
         &self.created_at
     }

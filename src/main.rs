@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod email_formatter;
 mod imap_monitor;
+mod provider;
 mod telegram;
 
 use anyhow::{Context, Result};
@@ -27,7 +28,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Run => run_daemon(cli.config, config, pool).await?,
-        Command::Account { action } => match action {
+        Command::Account { action } => match action {   
             AccountAction::Add(args) => cli::account_add::run(&pool, &args).await?,
             AccountAction::List => cli::account_list::run(&pool).await?,
             AccountAction::Remove(args) => cli::account_remove::run(&pool, &args).await?,

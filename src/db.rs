@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Account {
     id: i64,
     label: String,
@@ -71,7 +71,7 @@ pub async fn init_db(path: &str) -> Result<SqlitePool> {
 }
 
 pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>) -> Result<i64> {
-    let row = sqlx::query(
+    let id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO accounts (label, imap_host, imap_port, username, password, chat_id) \
          VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
     )
@@ -85,33 +85,17 @@ pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>) -> Result<
     .await
     .context("Failed to insert account")?;
 
-    Ok(row.get("id"))
+    Ok(id)
 }
 
 pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<Account>> {
-    let rows = sqlx::query(
+    sqlx::query_as::<_, Account>(
         "SELECT id, label, imap_host, imap_port, username, password, chat_id, created_at \
          FROM accounts ORDER BY id",
     )
     .fetch_all(pool)
     .await
-    .context("Failed to list accounts")?;
-
-    let accounts = rows
-        .into_iter()
-        .map(|row| Account {
-            id: row.get("id"),
-            label: row.get("label"),
-            imap_host: row.get("imap_host"),
-            imap_port: row.get("imap_port"),
-            username: row.get("username"),
-            password: row.get("password"),
-            chat_id: row.get("chat_id"),
-            created_at: row.get("created_at"),
-        })
-        .collect();
-
-    Ok(accounts)
+    .context("Failed to list accounts")
 }
 
 pub async fn remove_account(pool: &SqlitePool, id: i64) -> Result<bool> {
@@ -125,14 +109,15 @@ pub async fn remove_account(pool: &SqlitePool, id: i64) -> Result<bool> {
 }
 
 pub async fn is_uid_seen(pool: &SqlitePool, account_id: i64, uid: &str) -> Result<bool> {
-    let row = sqlx::query("SELECT COUNT(*) as cnt FROM seen_uids WHERE account_id = ? AND uid = ?")
-        .bind(account_id)
-        .bind(uid)
-        .fetch_one(pool)
-        .await
-        .context("Failed to check seen UID")?;
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM seen_uids WHERE account_id = ? AND uid = ?",
+    )
+    .bind(account_id)
+    .bind(uid)
+    .fetch_one(pool)
+    .await
+    .context("Failed to check seen UID")?;
 
-    let count: i64 = row.get("cnt");
     Ok(count > 0)
 }
 

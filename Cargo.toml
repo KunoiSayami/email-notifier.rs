@@ -1,6 +1,6 @@
 [package]
 name = "email-notifier"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [[bin]]
@@ -13,26 +13,31 @@ tokio = { version = "1", features = ["full"] }
 
 # IMAP
 async-imap = "0.11"
-async-tls = "0.12"
+async-tls = "0.13"
 
 # Telegram bot
 teloxide = { version = "0.17", features = ["macros", "rustls"] }
 
 # Database
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate"] }
+sqlx = { version = "0.8", features = [
+    "sqlite",
+    "runtime-tokio",
+    "tls-rustls",
+    "migrate",
+] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
 
 # Config file
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 
 # File watching (config reload)
-notify = "7"
+notify = "8"
 
 # Email parsing
-mailparse = "0.15"
+mailparse = "0.16"
 
 # Error handling
 anyhow = "1"

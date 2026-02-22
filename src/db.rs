@@ -141,7 +141,9 @@ pub struct BotUser {
     username: Option<String>,
     first_name: Option<String>,
     last_name: Option<String>,
+    #[allow(unused)]
     started_at: String,
+    privilege: i64,
 }
 
 impl BotUser {
@@ -165,8 +167,13 @@ impl BotUser {
         self.last_name.as_deref()
     }
 
+    #[allow(unused)]
     pub fn started_at(&self) -> &str {
         &self.started_at
+    }
+
+    pub fn privilege(&self) -> i64 {
+        self.privilege
     }
 }
 
@@ -199,4 +206,56 @@ pub async fn mark_all_uids_seen(pool: &SqlitePool, account_id: i64, uids: &[Stri
         mark_uid_seen(pool, account_id, uid).await?;
     }
     Ok(())
+}
+
+/// Check if a user has privilege >= 1 in bot_users.
+pub async fn is_user_allowed(pool: &SqlitePool, chat_id: i64) -> Result<bool> {
+    let privilege = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE((SELECT privilege FROM bot_users WHERE chat_id = ?), 0)",
+    )
+    .bind(chat_id)
+    .fetch_one(pool)
+    .await
+    .context("Failed to check user privilege")?;
+
+    Ok(privilege >= 1)
+}
+
+/// Grant privilege = 1 to a user. Returns false if the user hasn't /start-ed yet.
+pub async fn allow_user(pool: &SqlitePool, chat_id: i64) -> Result<bool> {
+    let result = sqlx::query("UPDATE bot_users SET privilege = 1 WHERE chat_id = ?")
+        .bind(chat_id)
+        .execute(pool)
+        .await
+        .context("Failed to allow user")?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// List accounts belonging to a specific chat_id.
+pub async fn list_accounts_by_chat_id(pool: &SqlitePool, chat_id: i64) -> Result<Vec<Account>> {
+    sqlx::query_as::<_, Account>(
+        "SELECT id, label, imap_host, imap_port, username, password, chat_id, created_at \
+         FROM accounts WHERE chat_id = ? ORDER BY id",
+    )
+    .bind(chat_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list accounts by chat_id")
+}
+
+/// Remove an account only if it belongs to the given chat_id.
+pub async fn remove_account_by_id_and_chat_id(
+    pool: &SqlitePool,
+    id: i64,
+    chat_id: i64,
+) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM accounts WHERE id = ? AND chat_id = ?")
+        .bind(id)
+        .bind(chat_id)
+        .execute(pool)
+        .await
+        .context("Failed to remove account")?;
+
+    Ok(result.rows_affected() > 0)
 }

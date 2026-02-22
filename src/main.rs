@@ -5,6 +5,7 @@ mod db;
 mod email_formatter;
 mod imap_monitor;
 mod ipc;
+mod oauth;
 mod provider;
 mod telegram;
 
@@ -89,12 +90,14 @@ async fn run_daemon(
             tracing::warn!("No accounts configured. Add one with `email-notifier account add …`.");
         }
 
+        let oauth_config = current_config.oauth().clone();
         let mut handles = Vec::new();
         for account in accounts {
             let pool_clone = pool.clone();
             let bot_clone = bot.clone();
+            let oauth_clone = oauth_config.clone();
             let handle = tokio::spawn(async move {
-                imap_monitor::monitor_account(account, pool_clone, bot_clone).await;
+                imap_monitor::monitor_account(account, pool_clone, bot_clone, oauth_clone).await;
             });
             handles.push(handle);
         }

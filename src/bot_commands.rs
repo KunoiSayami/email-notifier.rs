@@ -5,7 +5,7 @@ use teloxide::{prelude::*, types::ParseMode, utils::command::BotCommands};
 use crate::{
     db::{self, NewAccount},
     email_formatter::escape_html,
-    provider,
+    oauth, provider,
     telegram::send_notification,
 };
 
@@ -21,6 +21,13 @@ enum Command {
         provider_or_host: String,
         username: String,
         password: String,
+    },
+    #[command(parse_with = "split")]
+    Addoauth {
+        label: String,
+        provider: String,
+        username: String,
+        refresh_token: String,
     },
     List,
     #[command(parse_with = "split")]
@@ -82,6 +89,29 @@ async fn handle_command(
                 &password,
             )
             .await?;
+        }
+        Command::Addoauth {
+            label,
+            provider,
+            username,
+            refresh_token,
+        } => {
+            if !is_authorized(&pool, chat_id, admin_chat_id).await? {
+                reply_unauthorized(&bot, &msg).await?;
+                return Ok(());
+            }
+            handle_add_oauth(
+                &bot,
+                &msg,
+                &pool,
+                &label,
+                &provider,
+                &username,
+                &refresh_token,
+            )
+            .await?;
+            // Delete message to remove refresh token from chat history (best-effort).
+            bot.delete_message(msg.chat.id, msg.id).await.ok();
         }
         Command::List => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
@@ -201,6 +231,8 @@ async fn handle_add(
         imap_port,
         username,
         password,
+        auth_method: "password",
+        refresh_token: None,
     };
 
     let id = db::add_account(pool, &account, chat_id).await?;
@@ -214,6 +246,53 @@ async fn handle_add(
         .parse_mode(ParseMode::Html)
         .await?;
     tracing::info!("Account added via bot: id={id}, label={label}, chat_id={chat_id}");
+    Ok(())
+}
+
+async fn handle_add_oauth(
+    bot: &Bot,
+    msg: &Message,
+    pool: &SqlitePool,
+    label: &str,
+    provider_name: &str,
+    username: &str,
+    refresh_token: &str,
+) -> Result<()> {
+    let chat_id = msg.chat.id.0;
+
+    let p = provider::lookup(provider_name).ok_or_else(|| {
+        anyhow::anyhow!("Unknown provider. Use /providers to see available options.")
+    })?;
+
+    if oauth::OAuthProvider::from_imap_host(p.imap_host()).is_none() {
+        bot.send_message(
+            msg.chat.id,
+            "This provider does not support OAuth. Use /add instead.",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let account = NewAccount {
+        label,
+        imap_host: p.imap_host(),
+        imap_port: p.imap_port(),
+        username,
+        password: "",
+        auth_method: "xoauth2",
+        refresh_token: Some(refresh_token),
+    };
+
+    let id = db::add_account(pool, &account, chat_id).await?;
+    let text = format!(
+        "OAuth account added (id: {id}).\n<code>{}</code> via {}",
+        escape_html(label),
+        escape_html(provider_name),
+    );
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html)
+        .await?;
+    tracing::info!("OAuth account added via bot: id={id}, label={label}, chat_id={chat_id}");
     Ok(())
 }
 

@@ -3,6 +3,7 @@ use clap::Args;
 use sqlx::SqlitePool;
 
 use crate::db::{self, NewAccount};
+use crate::oauth;
 use crate::provider;
 
 #[derive(Args)]
@@ -27,9 +28,17 @@ pub struct AddArgs {
     #[arg(long)]
     pub username: String,
 
-    /// IMAP password or app password
+    /// IMAP password or app password (required for password auth, omit for OAuth)
     #[arg(long)]
-    pub password: String,
+    pub password: Option<String>,
+
+    /// Authentication method: "password" or "oauth"
+    #[arg(long, default_value = "password")]
+    pub auth: String,
+
+    /// OAuth refresh token (required when --auth oauth)
+    #[arg(long)]
+    pub refresh_token: Option<String>,
 
     /// Telegram chat ID to send notifications to
     #[arg(long)]
@@ -48,6 +57,25 @@ pub async fn run(pool: &SqlitePool, args: &AddArgs) -> Result<()> {
 
     let (host, port) = resolve_host_port(args)?;
 
+    let (password, auth_method, refresh_token) = match args.auth.as_str() {
+        "oauth" | "xoauth2" => {
+            let rt = args
+                .refresh_token
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--refresh-token is required when --auth oauth"))?;
+            oauth::OAuthProvider::from_imap_host(&host).ok_or_else(|| {
+                anyhow::anyhow!("OAuth is only supported for gmail and outlook providers")
+            })?;
+            ("", "xoauth2", Some(rt))
+        }
+        _ => {
+            let pw = args.password.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--password is required for password authentication")
+            })?;
+            (pw, "password", None)
+        }
+    };
+
     let id = db::add_account(
         pool,
         &NewAccount {
@@ -55,7 +83,9 @@ pub async fn run(pool: &SqlitePool, args: &AddArgs) -> Result<()> {
             imap_host: &host,
             imap_port: port,
             username: &args.username,
-            password: &args.password,
+            password,
+            auth_method,
+            refresh_token,
         },
         args.chat_id,
     )
@@ -65,6 +95,7 @@ pub async fn run(pool: &SqlitePool, args: &AddArgs) -> Result<()> {
     println!("  Label:    {}", args.label);
     println!("  Host:     {host}:{port}");
     println!("  Username: {}", args.username);
+    println!("  Auth:     {auth_method}");
     println!("  Chat ID:  {}", args.chat_id);
 
     Ok(())

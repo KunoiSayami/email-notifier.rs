@@ -25,8 +25,12 @@ pub enum IpcRequest {
         #[serde(default = "default_imap_port")]
         imap_port: u16,
         username: String,
+        #[serde(default)]
         password: String,
         chat_id: i64,
+        #[serde(default = "default_auth_method")]
+        auth_method: String,
+        refresh_token: Option<String>,
     },
     RemoveAccount {
         id: i64,
@@ -35,6 +39,10 @@ pub enum IpcRequest {
 
 fn default_imap_port() -> u16 {
     993
+}
+
+fn default_auth_method() -> String {
+    "password".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -52,6 +60,7 @@ pub struct IpcAccountInfo {
     imap_host: String,
     imap_port: u16,
     username: String,
+    auth_method: String,
     subscribers: i64,
 }
 
@@ -123,6 +132,7 @@ async fn handle_request(req: IpcRequest, pool: &SqlitePool, reload_notify: &Noti
                         imap_host: acct.imap_host().to_owned(),
                         imap_port: acct.imap_port(),
                         username: acct.username().to_owned(),
+                        auth_method: acct.auth_method().to_owned(),
                         subscribers,
                     });
                 }
@@ -139,6 +149,8 @@ async fn handle_request(req: IpcRequest, pool: &SqlitePool, reload_notify: &Noti
             username,
             password,
             chat_id,
+            auth_method,
+            refresh_token,
         } => {
             let account = NewAccount {
                 label: &label,
@@ -146,6 +158,8 @@ async fn handle_request(req: IpcRequest, pool: &SqlitePool, reload_notify: &Noti
                 imap_port,
                 username: &username,
                 password: &password,
+                auth_method: &auth_method,
+                refresh_token: refresh_token.as_deref(),
             };
             match db::add_account(pool, &account, chat_id).await {
                 Ok(id) => IpcResponse::Ok {

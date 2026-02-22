@@ -10,8 +10,10 @@ use tokio::time::sleep;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
 use crate::{
+    config::OAuthConfig,
     db::{self, EmailAccount},
     email_formatter::{format_telegram_message, parse_email},
+    oauth,
     telegram::send_notification,
 };
 
@@ -23,11 +25,16 @@ type ImapSession = async_imap::Session<
     async_tls::client::TlsStream<tokio_util::compat::Compat<tokio::net::TcpStream>>,
 >;
 
-pub async fn monitor_account(account: EmailAccount, pool: SqlitePool, bot: Bot) {
+pub async fn monitor_account(
+    account: EmailAccount,
+    pool: SqlitePool,
+    bot: Bot,
+    oauth_config: OAuthConfig,
+) {
     let mut backoff = RECONNECT_BASE_DELAY;
 
     loop {
-        match run_imap_session(&account, &pool, &bot).await {
+        match run_imap_session(&account, &pool, &bot, &oauth_config).await {
             Ok(()) => {
                 tracing::info!("[{}] IMAP session ended, reconnecting…", account.label());
                 backoff = RECONNECT_BASE_DELAY;
@@ -46,7 +53,12 @@ pub async fn monitor_account(account: EmailAccount, pool: SqlitePool, bot: Bot) 
     }
 }
 
-async fn run_imap_session(account: &EmailAccount, pool: &SqlitePool, bot: &Bot) -> Result<()> {
+async fn run_imap_session(
+    account: &EmailAccount,
+    pool: &SqlitePool,
+    bot: &Bot,
+    oauth_config: &OAuthConfig,
+) -> Result<()> {
     tracing::info!(
         "[{}] Connecting to {}:{}…",
         account.label(),
@@ -74,10 +86,29 @@ async fn run_imap_session(account: &EmailAccount, pool: &SqlitePool, bot: &Bot) 
         .context("TLS handshake failed")?;
 
     let client = async_imap::Client::new(tls_stream);
-    let mut session = client
-        .login(account.username(), account.password())
-        .await
-        .map_err(|(e, _)| anyhow::anyhow!("IMAP login failed: {e}"))?;
+    let mut session = if account.is_oauth() {
+        let provider = oauth::OAuthProvider::from_imap_host(account.imap_host())
+            .context("Unknown OAuth provider for IMAP host")?;
+        let credentials = oauth::get_credentials(oauth_config, provider)?;
+        let refresh_token = account
+            .refresh_token()
+            .context("OAuth account missing refresh_token")?;
+
+        let access_token =
+            oauth::refresh_access_token(provider, credentials, refresh_token).await?;
+        db::update_access_token(pool, account.id(), &access_token).await?;
+
+        let authenticator = oauth::XOAuth2::new(account.username().to_owned(), access_token);
+        client
+            .authenticate("XOAUTH2", &authenticator)
+            .await
+            .map_err(|(e, _)| anyhow::anyhow!("XOAUTH2 auth failed: {e}"))?
+    } else {
+        client
+            .login(account.username(), account.password())
+            .await
+            .map_err(|(e, _)| anyhow::anyhow!("IMAP login failed: {e}"))?
+    };
 
     tracing::info!("[{}] Logged in.", account.label());
 

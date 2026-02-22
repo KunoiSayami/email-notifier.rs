@@ -9,6 +9,9 @@ pub struct EmailAccount {
     imap_port: i64,
     username: String,
     password: String,
+    auth_method: String,
+    refresh_token: Option<String>,
+    access_token: Option<String>,
     #[allow(unused)]
     created_at: String,
 }
@@ -37,6 +40,18 @@ impl EmailAccount {
     pub fn password(&self) -> &str {
         &self.password
     }
+
+    pub fn auth_method(&self) -> &str {
+        &self.auth_method
+    }
+
+    pub fn refresh_token(&self) -> Option<&str> {
+        self.refresh_token.as_deref()
+    }
+
+    pub fn is_oauth(&self) -> bool {
+        self.auth_method == "xoauth2"
+    }
 }
 
 pub struct NewAccount<'a> {
@@ -45,6 +60,8 @@ pub struct NewAccount<'a> {
     pub imap_port: u16,
     pub username: &'a str,
     pub password: &'a str,
+    pub auth_method: &'a str,
+    pub refresh_token: Option<&'a str>,
 }
 
 pub async fn init_db(path: &str) -> Result<SqlitePool> {
@@ -65,9 +82,11 @@ pub async fn init_db(path: &str) -> Result<SqlitePool> {
 /// Returns the email_account id.
 pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>, chat_id: i64) -> Result<i64> {
     let account_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO email_accounts (label, imap_host, imap_port, username, password) \
-         VALUES (?, ?, ?, ?, ?) \
-         ON CONFLICT(imap_host, imap_port, username) DO UPDATE SET label = label \
+        "INSERT INTO email_accounts (label, imap_host, imap_port, username, password, auth_method, refresh_token) \
+         VALUES (?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(imap_host, imap_port, username) DO UPDATE SET \
+           label = excluded.label, auth_method = excluded.auth_method, \
+           refresh_token = excluded.refresh_token \
          RETURNING id",
     )
     .bind(account.label)
@@ -75,6 +94,8 @@ pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>, chat_id: i
     .bind(account.imap_port)
     .bind(account.username)
     .bind(account.password)
+    .bind(account.auth_method)
+    .bind(account.refresh_token)
     .fetch_one(pool)
     .await
     .context("Failed to upsert email account")?;
@@ -92,7 +113,8 @@ pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>, chat_id: i
 /// List all email accounts (for daemon monitoring).
 pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<EmailAccount>> {
     sqlx::query_as::<_, EmailAccount>(
-        "SELECT id, label, imap_host, imap_port, username, password, created_at \
+        "SELECT id, label, imap_host, imap_port, username, password, \
+                auth_method, refresh_token, access_token, created_at \
          FROM email_accounts ORDER BY id",
     )
     .fetch_all(pool)
@@ -106,7 +128,8 @@ pub async fn list_accounts_by_chat_id(
     chat_id: i64,
 ) -> Result<Vec<EmailAccount>> {
     sqlx::query_as::<_, EmailAccount>(
-        "SELECT e.id, e.label, e.imap_host, e.imap_port, e.username, e.password, e.created_at \
+        "SELECT e.id, e.label, e.imap_host, e.imap_port, e.username, e.password, \
+                e.auth_method, e.refresh_token, e.access_token, e.created_at \
          FROM email_accounts e \
          JOIN account_subscriptions s ON s.account_id = e.id \
          WHERE s.chat_id = ? \
@@ -185,6 +208,21 @@ pub async fn remove_account_by_id_and_chat_id(
     }
 
     Ok(true)
+}
+
+/// Cache a refreshed OAuth access token in the database.
+pub async fn update_access_token(
+    pool: &SqlitePool,
+    account_id: i64,
+    access_token: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE email_accounts SET access_token = ? WHERE id = ?")
+        .bind(access_token)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .context("Failed to update access token")?;
+    Ok(())
 }
 
 pub async fn is_uid_seen(pool: &SqlitePool, account_id: i64, uid: &str) -> Result<bool> {

@@ -13,6 +13,8 @@ pub struct Config {
     pub log: LogConfig,
     #[serde(default)]
     pub ipc: IpcConfig,
+    #[serde(default)]
+    pub oauth: OAuthConfig,
 }
 
 impl Config {
@@ -22,6 +24,32 @@ impl Config {
 
     pub fn ipc(&self) -> &IpcConfig {
         &self.ipc
+    }
+
+    pub fn oauth(&self) -> &OAuthConfig {
+        &self.oauth
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OAuthConfig {
+    pub google: Option<OAuthClientCredentials>,
+    pub microsoft: Option<OAuthClientCredentials>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OAuthClientCredentials {
+    client_id: String,
+    client_secret: String,
+}
+
+impl OAuthClientCredentials {
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    pub fn client_secret(&self) -> &str {
+        &self.client_secret
     }
 }
 

@@ -171,7 +171,7 @@ pub fn format_telegram_message(account_label: &str, email: &ParsedEmail) -> Stri
     msg
 }
 
-fn escape_html(s: &str) -> String {
+pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

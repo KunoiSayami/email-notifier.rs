@@ -1,3 +1,4 @@
+mod bot_commands;
 mod cli;
 mod config;
 mod db;
@@ -51,6 +52,7 @@ async fn run_daemon(
 
     loop {
         let bot = telegram::create_bot(&current_config.telegram.bot_token);
+        let admin_chat_id = current_config.telegram.admin_chat_id;
 
         // Spawn a monitor task per account.
         let accounts = db::list_accounts(&pool).await?;
@@ -68,6 +70,14 @@ async fn run_daemon(
             });
             handles.push(handle);
         }
+
+        // Spawn the Telegram command handler (listens for /start etc.).
+        let cmd_handle = tokio::spawn(bot_commands::run_command_handler(
+            bot.clone(),
+            pool.clone(),
+            admin_chat_id,
+        ));
+        handles.push(cmd_handle);
 
         // Wait for a config change. When it arrives, cancel all tasks and restart with new config.
         config_rx.changed().await.ok();

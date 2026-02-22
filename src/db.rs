@@ -132,6 +132,65 @@ pub async fn mark_uid_seen(pool: &SqlitePool, account_id: i64, uid: &str) -> Res
     Ok(())
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct BotUser {
+    id: i64,
+    chat_id: i64,
+    username: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    started_at: String,
+}
+
+impl BotUser {
+    pub fn id(&self) -> i64 {
+        self.id
+    }
+
+    pub fn chat_id(&self) -> i64 {
+        self.chat_id
+    }
+
+    pub fn username(&self) -> Option<&str> {
+        self.username.as_deref()
+    }
+
+    pub fn first_name(&self) -> Option<&str> {
+        self.first_name.as_deref()
+    }
+
+    pub fn last_name(&self) -> Option<&str> {
+        self.last_name.as_deref()
+    }
+
+    pub fn started_at(&self) -> &str {
+        &self.started_at
+    }
+}
+
+/// Returns `true` if this is a newly inserted user, `false` if they already existed.
+pub async fn register_bot_user(
+    pool: &SqlitePool,
+    chat_id: i64,
+    username: Option<&str>,
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "INSERT OR IGNORE INTO bot_users (chat_id, username, first_name, last_name) \
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(chat_id)
+    .bind(username)
+    .bind(first_name)
+    .bind(last_name)
+    .execute(pool)
+    .await
+    .context("Failed to register bot user")?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 /// Mark all existing UIDs as seen on first connect (no spam on startup).
 pub async fn mark_all_uids_seen(pool: &SqlitePool, account_id: i64, uids: &[String]) -> Result<()> {
     for uid in uids {

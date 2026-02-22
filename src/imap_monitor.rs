@@ -10,7 +10,7 @@ use tokio::time::sleep;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
 use crate::{
-    db::{self, Account},
+    db::{self, EmailAccount},
     email_formatter::{format_telegram_message, parse_email},
     telegram::send_notification,
 };
@@ -23,7 +23,7 @@ type ImapSession = async_imap::Session<
     async_tls::client::TlsStream<tokio_util::compat::Compat<tokio::net::TcpStream>>,
 >;
 
-pub async fn monitor_account(account: Account, pool: SqlitePool, bot: Bot) {
+pub async fn monitor_account(account: EmailAccount, pool: SqlitePool, bot: Bot) {
     let mut backoff = RECONNECT_BASE_DELAY;
 
     loop {
@@ -46,7 +46,7 @@ pub async fn monitor_account(account: Account, pool: SqlitePool, bot: Bot) {
     }
 }
 
-async fn run_imap_session(account: &Account, pool: &SqlitePool, bot: &Bot) -> Result<()> {
+async fn run_imap_session(account: &EmailAccount, pool: &SqlitePool, bot: &Bot) -> Result<()> {
     tracing::info!(
         "[{}] Connecting to {}:{}…",
         account.label(),
@@ -112,7 +112,7 @@ async fn run_imap_session(account: &Account, pool: &SqlitePool, bot: &Bot) -> Re
 }
 
 async fn seed_seen_uids(
-    account: &Account,
+    account: &EmailAccount,
     pool: &SqlitePool,
     session: &mut ImapSession,
 ) -> Result<()> {
@@ -136,7 +136,7 @@ async fn fetch_all_uids(session: &mut ImapSession) -> Result<Vec<u32>> {
 }
 
 async fn process_new_emails(
-    account: &Account,
+    account: &EmailAccount,
     pool: &SqlitePool,
     bot: &Bot,
     session: &mut ImapSession,
@@ -155,7 +155,7 @@ async fn process_new_emails(
             continue;
         }
 
-        match fetch_and_notify(account, bot, session, uid).await {
+        match fetch_and_notify(account, pool, bot, session, uid).await {
             Ok(()) => {
                 db::mark_uid_seen(pool, account.id(), &uid_str).await?;
             }
@@ -169,7 +169,8 @@ async fn process_new_emails(
 }
 
 async fn fetch_and_notify(
-    account: &Account,
+    account: &EmailAccount,
+    pool: &SqlitePool,
     bot: &Bot,
     session: &mut ImapSession,
     uid: u32,
@@ -184,11 +185,21 @@ async fn fetch_and_notify(
         let raw = fetch.body().context("Message has no body")?;
         let parsed = parse_email(raw)?;
         let text = format_telegram_message(account.label(), &parsed);
-        send_notification(bot, account.chat_id(), &text).await?;
+
+        let chat_ids = db::get_subscriber_chat_ids(pool, account.id()).await?;
+        for chat_id in &chat_ids {
+            if let Err(e) = send_notification(bot, *chat_id, &text).await {
+                tracing::warn!(
+                    "[{}] Failed to notify chat {chat_id}: {e:#}",
+                    account.label()
+                );
+            }
+        }
+
         tracing::info!(
-            "[{}] Notified chat {} about UID {uid}: \"{}\"",
+            "[{}] Notified {} subscriber(s) about UID {uid}: \"{}\"",
             account.label(),
-            account.chat_id(),
+            chat_ids.len(),
             parsed.subject()
         );
     }

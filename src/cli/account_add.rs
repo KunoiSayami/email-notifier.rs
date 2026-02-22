@@ -56,8 +56,8 @@ pub async fn run(pool: &SqlitePool, args: &AddArgs) -> Result<()> {
             imap_port: port,
             username: &args.username,
             password: &args.password,
-            chat_id: args.chat_id,
         },
+        args.chat_id,
     )
     .await?;
 

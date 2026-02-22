@@ -2,19 +2,18 @@ use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct Account {
+pub struct EmailAccount {
     id: i64,
     label: String,
     imap_host: String,
     imap_port: i64,
     username: String,
     password: String,
-    chat_id: i64,
     #[allow(unused)]
     created_at: String,
 }
 
-impl Account {
+impl EmailAccount {
     pub fn id(&self) -> i64 {
         self.id
     }
@@ -38,15 +37,6 @@ impl Account {
     pub fn password(&self) -> &str {
         &self.password
     }
-
-    pub fn chat_id(&self) -> i64 {
-        self.chat_id
-    }
-
-    #[allow(unused)]
-    pub fn created_at(&self) -> &str {
-        &self.created_at
-    }
 }
 
 pub struct NewAccount<'a> {
@@ -55,7 +45,6 @@ pub struct NewAccount<'a> {
     pub imap_port: u16,
     pub username: &'a str,
     pub password: &'a str,
-    pub chat_id: i64,
 }
 
 pub async fn init_db(path: &str) -> Result<SqlitePool> {
@@ -72,42 +61,130 @@ pub async fn init_db(path: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
-pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>) -> Result<i64> {
-    let id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO accounts (label, imap_host, imap_port, username, password, chat_id) \
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+/// Upserts an email account and subscribes the given chat_id.
+/// Returns the email_account id.
+pub async fn add_account(pool: &SqlitePool, account: &NewAccount<'_>, chat_id: i64) -> Result<i64> {
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO email_accounts (label, imap_host, imap_port, username, password) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(imap_host, imap_port, username) DO UPDATE SET label = label \
+         RETURNING id",
     )
     .bind(account.label)
     .bind(account.imap_host)
     .bind(account.imap_port)
     .bind(account.username)
     .bind(account.password)
-    .bind(account.chat_id)
     .fetch_one(pool)
     .await
-    .context("Failed to insert account")?;
+    .context("Failed to upsert email account")?;
 
-    Ok(id)
+    sqlx::query("INSERT OR IGNORE INTO account_subscriptions (account_id, chat_id) VALUES (?, ?)")
+        .bind(account_id)
+        .bind(chat_id)
+        .execute(pool)
+        .await
+        .context("Failed to add subscription")?;
+
+    Ok(account_id)
 }
 
-pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<Account>> {
-    sqlx::query_as::<_, Account>(
-        "SELECT id, label, imap_host, imap_port, username, password, chat_id, created_at \
-         FROM accounts ORDER BY id",
+/// List all email accounts (for daemon monitoring).
+pub async fn list_accounts(pool: &SqlitePool) -> Result<Vec<EmailAccount>> {
+    sqlx::query_as::<_, EmailAccount>(
+        "SELECT id, label, imap_host, imap_port, username, password, created_at \
+         FROM email_accounts ORDER BY id",
     )
     .fetch_all(pool)
     .await
     .context("Failed to list accounts")
 }
 
+/// List accounts that a specific chat_id is subscribed to.
+pub async fn list_accounts_by_chat_id(
+    pool: &SqlitePool,
+    chat_id: i64,
+) -> Result<Vec<EmailAccount>> {
+    sqlx::query_as::<_, EmailAccount>(
+        "SELECT e.id, e.label, e.imap_host, e.imap_port, e.username, e.password, e.created_at \
+         FROM email_accounts e \
+         JOIN account_subscriptions s ON s.account_id = e.id \
+         WHERE s.chat_id = ? \
+         ORDER BY e.id",
+    )
+    .bind(chat_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list accounts by chat_id")
+}
+
+/// Get all subscriber chat_ids for a given account.
+pub async fn get_subscriber_chat_ids(pool: &SqlitePool, account_id: i64) -> Result<Vec<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT chat_id FROM account_subscriptions WHERE account_id = ? ORDER BY chat_id",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to get subscriber chat_ids")
+}
+
+/// Get the subscriber count for a given account.
+pub async fn get_subscriber_count(pool: &SqlitePool, account_id: i64) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_subscriptions WHERE account_id = ?")
+        .bind(account_id)
+        .fetch_one(pool)
+        .await
+        .context("Failed to get subscriber count")
+}
+
+/// Remove an email account entirely (admin / CLI use).
 pub async fn remove_account(pool: &SqlitePool, id: i64) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM accounts WHERE id = ?")
+    let result = sqlx::query("DELETE FROM email_accounts WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await
         .context("Failed to remove account")?;
 
     Ok(result.rows_affected() > 0)
+}
+
+/// Unsubscribe a chat_id from an account. If no subscribers remain, delete the account too.
+pub async fn remove_account_by_id_and_chat_id(
+    pool: &SqlitePool,
+    id: i64,
+    chat_id: i64,
+) -> Result<bool> {
+    let result =
+        sqlx::query("DELETE FROM account_subscriptions WHERE account_id = ? AND chat_id = ?")
+            .bind(id)
+            .bind(chat_id)
+            .execute(pool)
+            .await
+            .context("Failed to remove subscription")?;
+
+    if result.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    // If no subscribers remain, delete the email account (cascades to seen_uids).
+    let remaining = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM account_subscriptions WHERE account_id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .context("Failed to count remaining subscribers")?;
+
+    if remaining == 0 {
+        sqlx::query("DELETE FROM email_accounts WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("Failed to remove orphaned account")?;
+    }
+
+    Ok(true)
 }
 
 pub async fn is_uid_seen(pool: &SqlitePool, account_id: i64, uid: &str) -> Result<bool> {
@@ -228,34 +305,6 @@ pub async fn allow_user(pool: &SqlitePool, chat_id: i64) -> Result<bool> {
         .execute(pool)
         .await
         .context("Failed to allow user")?;
-
-    Ok(result.rows_affected() > 0)
-}
-
-/// List accounts belonging to a specific chat_id.
-pub async fn list_accounts_by_chat_id(pool: &SqlitePool, chat_id: i64) -> Result<Vec<Account>> {
-    sqlx::query_as::<_, Account>(
-        "SELECT id, label, imap_host, imap_port, username, password, chat_id, created_at \
-         FROM accounts WHERE chat_id = ? ORDER BY id",
-    )
-    .bind(chat_id)
-    .fetch_all(pool)
-    .await
-    .context("Failed to list accounts by chat_id")
-}
-
-/// Remove an account only if it belongs to the given chat_id.
-pub async fn remove_account_by_id_and_chat_id(
-    pool: &SqlitePool,
-    id: i64,
-    chat_id: i64,
-) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM accounts WHERE id = ? AND chat_id = ?")
-        .bind(id)
-        .bind(chat_id)
-        .execute(pool)
-        .await
-        .context("Failed to remove account")?;
 
     Ok(result.rows_affected() > 0)
 }

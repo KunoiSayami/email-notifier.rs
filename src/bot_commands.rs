@@ -201,10 +201,9 @@ async fn handle_add(
         imap_port,
         username,
         password,
-        chat_id,
     };
 
-    let id = db::add_account(pool, &account).await?;
+    let id = db::add_account(pool, &account, chat_id).await?;
     let text = format!(
         "Account added (id: {id}).\n<code>{}</code> → {}:{}",
         escape_html(label),

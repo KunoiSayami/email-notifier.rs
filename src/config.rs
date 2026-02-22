@@ -11,11 +11,41 @@ pub struct Config {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub log: LogConfig,
+    #[serde(default)]
+    pub ipc: IpcConfig,
 }
 
 impl Config {
     pub fn log(&self) -> &LogConfig {
         &self.log
+    }
+
+    pub fn ipc(&self) -> &IpcConfig {
+        &self.ipc
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpcConfig {
+    #[serde(default = "default_socket_name")]
+    socket_name: String,
+}
+
+impl IpcConfig {
+    pub fn socket_name(&self) -> &str {
+        &self.socket_name
+    }
+}
+
+fn default_socket_name() -> String {
+    "email-notifier.sock".to_string()
+}
+
+impl Default for IpcConfig {
+    fn default() -> Self {
+        Self {
+            socket_name: default_socket_name(),
+        }
     }
 }
 

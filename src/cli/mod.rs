@@ -1,6 +1,7 @@
 pub mod account_add;
 pub mod account_list;
 pub mod account_remove;
+pub mod ipc_client;
 
 use clap::{Parser, Subcommand};
 
@@ -27,6 +28,11 @@ pub enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+    /// Send a command to the running daemon via IPC
+    Ipc {
+        #[command(subcommand)]
+        action: IpcAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -37,4 +43,14 @@ pub enum AccountAction {
     List,
     /// Remove an account by ID
     Remove(account_remove::RemoveArgs),
+}
+
+#[derive(Subcommand)]
+pub enum IpcAction {
+    /// Trigger daemon to reload accounts from database
+    Reload,
+    /// Check if the daemon is running
+    Status,
+    /// List all email accounts via daemon
+    List,
 }

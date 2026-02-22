@@ -13,6 +13,12 @@ pub struct Config {
     pub log: LogConfig,
 }
 
+impl Config {
+    pub fn log(&self) -> &LogConfig {
+        &self.log
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     pub bot_token: String,
@@ -33,8 +39,23 @@ fn default_db_path() -> String {
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
+    #[serde(default = "default_modifier")]
+    modifier: String,
 }
 
+impl LogConfig {
+    pub fn level(&self) -> String {
+        if !self.level.contains(",") {
+            format!("{},{}", self.level, self.modifier)
+        } else {
+            self.level.clone()
+        }
+    }
+}
+
+fn default_modifier() -> String {
+    "hyper_util=warn,sqlx=warn,teloxide=warn,reqwest=warn".to_string()
+}
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -43,6 +64,7 @@ impl Default for LogConfig {
     fn default() -> Self {
         Self {
             level: default_log_level(),
+            modifier: default_modifier(),
         }
     }
 }

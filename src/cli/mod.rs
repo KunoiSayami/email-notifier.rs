@@ -15,7 +15,7 @@ pub struct Cli {
     pub config: String,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]

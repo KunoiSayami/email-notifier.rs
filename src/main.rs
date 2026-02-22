@@ -21,14 +21,15 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Failed to load config from '{}'", cli.config))?;
 
     // Initialize tracing
-    let filter = EnvFilter::try_new(&config.log.level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter =
+        EnvFilter::try_new(&config.log().level()).unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let pool = db::init_db(&config.database.path).await?;
 
     match cli.command {
-        Command::Run => run_daemon(cli.config, config, pool).await?,
-        Command::Account { action } => match action {   
+        None | Some(Command::Run) => run_daemon(cli.config, config, pool).await?,
+        Some(Command::Account { action }) => match action {
             AccountAction::Add(args) => cli::account_add::run(&pool, &args).await?,
             AccountAction::List => cli::account_list::run(&pool).await?,
             AccountAction::Remove(args) => cli::account_remove::run(&pool, &args).await?,

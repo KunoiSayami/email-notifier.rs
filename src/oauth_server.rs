@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState { config: cfg });
 
     let app = Router::new()
-        .route("/oauth/callback", get(oauth_callback))
+        .route("/callback", get(oauth_callback))
         .route("/health", get(health))
         .with_state(state);
 

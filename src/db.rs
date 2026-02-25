@@ -315,6 +315,18 @@ pub async fn register_bot_user(
     Ok(result.rows_affected() > 0)
 }
 
+/// Check whether any UIDs have been recorded for this account.
+pub async fn has_seen_uids(pool: &SqlitePool, account_id: i64) -> Result<bool> {
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM seen_uids WHERE account_id = ? LIMIT 1")
+            .bind(account_id)
+            .fetch_one(pool)
+            .await
+            .context("Failed to check seen UIDs")?;
+
+    Ok(count > 0)
+}
+
 /// Mark all existing UIDs as seen on first connect (no spam on startup).
 pub async fn mark_all_uids_seen(pool: &SqlitePool, account_id: i64, uids: &[String]) -> Result<()> {
     for uid in uids {

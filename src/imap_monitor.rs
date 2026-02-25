@@ -37,7 +37,11 @@ pub async fn monitor_account(
 
     loop {
         let result = tokio::select! {
-            r = run_imap_session(&account, &pool, &bot, &oauth_config) => Some(r),
+            r = async {
+                let ret = run_imap_session(&account, &pool, &bot, &oauth_config).await;
+                tracing::debug!("{ret:?}");
+                ret
+            } => Some(r),
             _ = cancel.cancelled() => None,
         };
 
@@ -108,7 +112,17 @@ async fn run_imap_session(
         .await
         .context("TLS handshake failed")?;
 
-    let client = async_imap::Client::new(tls_stream);
+    let mut client = async_imap::Client::new(tls_stream);
+
+    // Client::new does not consume the server greeting. We must read it
+    // before calling authenticate(), otherwise the greeting gets mixed into
+    // the SASL handshake and causes a deadlock.
+    client
+        .read_response()
+        .await
+        .context("Failed to read server greeting")?
+        .context("Connection closed before greeting")?;
+
     let mut session = if account.is_oauth() {
         let provider = oauth::OAuthProvider::from_imap_host(account.imap_host())
             .context("Unknown OAuth provider for IMAP host")?;
@@ -121,9 +135,9 @@ async fn run_imap_session(
             oauth::refresh_access_token(provider, credentials, refresh_token).await?;
         db::update_access_token(pool, account.id(), &access_token).await?;
 
-        let authenticator = oauth::XOAuth2::new(account.username().to_owned(), access_token);
+        let mut authenticator = oauth::XOAuth2::new(account.username().to_owned(), access_token);
         client
-            .authenticate("XOAUTH2", &authenticator)
+            .authenticate("XOAUTH2", &mut authenticator)
             .await
             .map_err(|(e, _)| anyhow::anyhow!("XOAUTH2 auth failed: {e}"))?
     } else {
@@ -140,8 +154,12 @@ async fn run_imap_session(
         .await
         .context("Failed to SELECT INBOX")?;
 
-    // On first connect, mark all existing UIDs as seen to avoid spamming.
-    seed_seen_uids(account, pool, &mut session).await?;
+    // On first-ever connect for this account, mark all existing UIDs as seen
+    // to avoid spamming. On reconnects, skip so we pick up emails that arrived
+    // while disconnected.
+    if !db::has_seen_uids(pool, account.id()).await? {
+        seed_seen_uids(account, pool, &mut session).await?;
+    }
 
     loop {
         // Enter IDLE

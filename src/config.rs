@@ -117,10 +117,10 @@ impl LogConfig {
 }
 
 fn default_modifier() -> String {
-    "hyper_util=warn,sqlx=warn,teloxide=warn,reqwest=warn".to_string()
+    "hyper_util=warn,sqlx=warn,teloxide=warn,reqwest=warn,rustls=warn,mio=warn".into()
 }
 fn default_log_level() -> String {
-    "info".to_string()
+    "info".into()
 }
 
 impl Default for LogConfig {

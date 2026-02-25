@@ -208,24 +208,39 @@ pub async fn exchange_authorization_code(
 }
 
 /// XOAUTH2 SASL authenticator for async-imap.
+///
+/// On the first challenge (empty), we send the XOAUTH2 token string.
+/// On any subsequent challenge (error details), we send an empty response
+/// to let the server return the actual error instead of hanging.
 pub struct XOAuth2 {
     user: String,
     access_token: String,
+    sent: bool,
 }
 
 impl XOAuth2 {
     pub fn new(user: String, access_token: String) -> Self {
-        Self { user, access_token }
+        Self {
+            user,
+            access_token,
+            sent: false,
+        }
     }
 }
 
-impl async_imap::Authenticator for &XOAuth2 {
+impl async_imap::Authenticator for &mut XOAuth2 {
     type Response = String;
 
     fn process(&mut self, _challenge: &[u8]) -> Self::Response {
-        format!(
-            "user={}\x01auth=Bearer {}\x01\x01",
-            self.user, self.access_token
-        )
+        if self.sent {
+            // Server sent an error challenge; respond empty to complete the exchange.
+            String::new()
+        } else {
+            self.sent = true;
+            format!(
+                "user={}\x01auth=Bearer {}\x01\x01",
+                self.user, self.access_token
+            )
+        }
     }
 }

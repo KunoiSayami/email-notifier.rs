@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{AccountAction, Cli, Command, IpcAction};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -68,13 +69,16 @@ async fn run_daemon(
 
     let mut current_config = initial_config;
     let reload_notify = Arc::new(Notify::new());
+    let shutdown_token = CancellationToken::new();
 
     // Spawn IPC server (lives for the entire daemon lifetime).
     let ipc_socket_name = current_config.ipc().socket_name().to_owned();
     let ipc_pool = pool.clone();
     let ipc_reload = reload_notify.clone();
-    tokio::spawn(async move {
-        if let Err(e) = ipc::run_ipc_server(ipc_socket_name, ipc_pool, ipc_reload).await {
+    let ipc_cancel = shutdown_token.child_token();
+    let ipc_handle = tokio::spawn(async move {
+        if let Err(e) = ipc::run_ipc_server(ipc_socket_name, ipc_pool, ipc_reload, ipc_cancel).await
+        {
             tracing::error!("IPC server error: {e:#}");
         }
     });
@@ -96,8 +100,10 @@ async fn run_daemon(
             let pool_clone = pool.clone();
             let bot_clone = bot.clone();
             let oauth_clone = oauth_config.clone();
+            let cancel = shutdown_token.child_token();
             let handle = tokio::spawn(async move {
-                imap_monitor::monitor_account(account, pool_clone, bot_clone, oauth_clone).await;
+                imap_monitor::monitor_account(account, pool_clone, bot_clone, oauth_clone, cancel)
+                    .await;
             });
             handles.push(handle);
         }
@@ -107,10 +113,11 @@ async fn run_daemon(
             bot.clone(),
             pool.clone(),
             admin_chat_id,
+            shutdown_token.child_token(),
         ));
         handles.push(cmd_handle);
 
-        // Wait for a config change OR an IPC reload signal.
+        // Wait for a config change, IPC reload, or Ctrl+C.
         tokio::select! {
             _ = config_rx.changed() => {
                 current_config = config_rx.borrow().clone();
@@ -118,6 +125,19 @@ async fn run_daemon(
             }
             _ = reload_notify.notified() => {
                 tracing::info!("IPC reload requested, restarting monitors…");
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl+C, shutting down…");
+                shutdown_token.cancel();
+
+                let grace = tokio::time::Duration::from_secs(10);
+                for handle in handles {
+                    let _ = tokio::time::timeout(grace, handle).await;
+                }
+                let _ = tokio::time::timeout(grace, ipc_handle).await;
+
+                tracing::info!("Shutdown complete.");
+                return Ok(());
             }
         }
 

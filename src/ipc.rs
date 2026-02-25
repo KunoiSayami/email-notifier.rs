@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, ToNsName as _,
@@ -68,6 +69,7 @@ pub async fn run_ipc_server(
     socket_name: String,
     pool: SqlitePool,
     reload_notify: Arc<Notify>,
+    cancel: CancellationToken,
 ) -> Result<()> {
     tracing::info!("IPC server listening on {socket_name}");
 
@@ -81,7 +83,13 @@ pub async fn run_ipc_server(
         .context("Failed to create IPC listener")?;
 
     loop {
-        let conn = listener.accept().await.context("IPC accept failed")?;
+        let conn = tokio::select! {
+            result = listener.accept() => result.context("IPC accept failed")?,
+            _ = cancel.cancelled() => {
+                tracing::info!("IPC server shutting down.");
+                return Ok(());
+            }
+        };
         let pool = pool.clone();
         let reload_notify = reload_notify.clone();
 

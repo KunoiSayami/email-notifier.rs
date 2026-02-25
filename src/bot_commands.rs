@@ -1,6 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 use teloxide::{prelude::*, types::ParseMode, utils::command::BotCommands};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     db::{self, NewAccount},
@@ -40,20 +41,34 @@ enum Command {
     },
 }
 
-pub async fn run_command_handler(bot: Bot, pool: SqlitePool, admin_chat_id: i64) {
+pub async fn run_command_handler(
+    bot: Bot,
+    pool: SqlitePool,
+    admin_chat_id: i64,
+    cancel: CancellationToken,
+) {
     let handler = Update::filter_message()
         .filter_command::<Command>()
         .endpoint(handle_command);
 
-    Dispatcher::builder(bot, handler)
+    let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool, admin_chat_id])
         .default_handler(|_upd| async {})
         .error_handler(LoggingErrorHandler::with_custom_text(
             "Error in command handler",
         ))
-        .build()
-        .dispatch()
-        .await;
+        .build();
+
+    // Bridge CancellationToken to teloxide's ShutdownToken.
+    let teloxide_shutdown = dispatcher.shutdown_token();
+    tokio::spawn(async move {
+        cancel.cancelled().await;
+        if let Ok(fut) = teloxide_shutdown.shutdown() {
+            fut.await;
+        }
+    });
+
+    dispatcher.dispatch().await;
 }
 
 async fn handle_command(

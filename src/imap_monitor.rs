@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 use teloxide::prelude::*;
 use tokio::time::sleep;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::OAuthConfig,
@@ -30,23 +31,45 @@ pub async fn monitor_account(
     pool: SqlitePool,
     bot: Bot,
     oauth_config: OAuthConfig,
+    cancel: CancellationToken,
 ) {
     let mut backoff = RECONNECT_BASE_DELAY;
 
     loop {
-        match run_imap_session(&account, &pool, &bot, &oauth_config).await {
-            Ok(()) => {
+        let result = tokio::select! {
+            r = run_imap_session(&account, &pool, &bot, &oauth_config) => Some(r),
+            _ = cancel.cancelled() => None,
+        };
+
+        match result {
+            None => {
+                tracing::info!(
+                    "[{}] Shutdown requested, stopping monitor.",
+                    account.label()
+                );
+                break;
+            }
+            Some(Ok(())) => {
                 tracing::info!("[{}] IMAP session ended, reconnecting…", account.label());
                 backoff = RECONNECT_BASE_DELAY;
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 tracing::error!("[{}] IMAP error: {e:#}", account.label());
                 tracing::info!(
                     "[{}] Reconnecting in {}s…",
                     account.label(),
                     backoff.as_secs()
                 );
-                sleep(backoff).await;
+                tokio::select! {
+                    _ = sleep(backoff) => {}
+                    _ = cancel.cancelled() => {
+                        tracing::info!(
+                            "[{}] Shutdown requested during backoff, stopping.",
+                            account.label()
+                        );
+                        break;
+                    }
+                }
                 backoff = (backoff * 2).min(RECONNECT_MAX_DELAY);
             }
         }

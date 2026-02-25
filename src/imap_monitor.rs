@@ -249,7 +249,7 @@ async fn fetch_and_notify(
 ) -> Result<()> {
     let fetch_seq = uid.to_string();
     let mut messages = session
-        .uid_fetch(&fetch_seq, "RFC822")
+        .uid_fetch(&fetch_seq, "BODY.PEEK[]")
         .await
         .context("UID FETCH failed")?;
 

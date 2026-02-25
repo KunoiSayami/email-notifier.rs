@@ -11,6 +11,7 @@ pub struct EmailAccount {
     password: String,
     auth_method: String,
     refresh_token: Option<String>,
+    #[allow(unused)]
     access_token: Option<String>,
     #[allow(unused)]
     created_at: String,

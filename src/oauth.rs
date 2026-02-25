@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{OAuthClientCredentials, OAuthConfig};
 
@@ -23,6 +24,36 @@ impl OAuthProvider {
         match self {
             Self::Google => "https://oauth2.googleapis.com/token",
             Self::Microsoft => "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        }
+    }
+
+    pub fn authorization_endpoint(&self) -> &'static str {
+        match self {
+            Self::Google => "https://accounts.google.com/o/oauth2/v2/auth",
+            Self::Microsoft => "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        }
+    }
+
+    pub fn scopes(&self) -> &'static str {
+        match self {
+            Self::Google => "https://mail.google.com/",
+            Self::Microsoft => "offline_access https://outlook.office365.com/IMAP.AccessAsUser.All",
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::Microsoft => "Microsoft",
+        }
+    }
+
+    /// Parse provider from user-facing name (case-insensitive).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "google" | "gmail" => Some(Self::Google),
+            "microsoft" | "outlook" => Some(Self::Microsoft),
+            _ => None,
         }
     }
 }
@@ -80,6 +111,100 @@ pub async fn refresh_access_token(
         .context("Failed to parse token refresh response")?;
 
     Ok(token_resp.access_token)
+}
+
+/// Session data encoded in the OAuth `state` parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthState {
+    pub label: String,
+    pub provider_name: String,
+    pub username: String,
+    pub chat_id: i64,
+}
+
+impl OAuthState {
+    /// Encode as base64url JSON.
+    pub fn encode(&self) -> String {
+        let json = serde_json::to_string(self).expect("OAuthState serialization cannot fail");
+        URL_SAFE_NO_PAD.encode(json.as_bytes())
+    }
+
+    /// Decode from base64url JSON.
+    pub fn decode(s: &str) -> Result<Self> {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(s)
+            .context("Invalid base64 in OAuth state")?;
+        serde_json::from_slice(&bytes).context("Invalid JSON in OAuth state")
+    }
+}
+
+/// Build an OAuth authorization URL for the user to visit.
+pub fn build_authorization_url(
+    provider: OAuthProvider,
+    credentials: &OAuthClientCredentials,
+    redirect_uri: &str,
+    state: &str,
+    login_hint: &str,
+) -> Result<String> {
+    let mut url = reqwest::Url::parse(provider.authorization_endpoint())
+        .context("Invalid authorization endpoint")?;
+
+    url.query_pairs_mut()
+        .append_pair("client_id", credentials.client_id())
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", provider.scopes())
+        .append_pair("state", state)
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent")
+        .append_pair("login_hint", login_hint);
+
+    Ok(url.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct CodeExchangeResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+/// Exchange an authorization code for access + refresh tokens.
+pub async fn exchange_authorization_code(
+    provider: OAuthProvider,
+    credentials: &OAuthClientCredentials,
+    redirect_uri: &str,
+    code: &str,
+) -> Result<(String, String)> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(provider.token_endpoint())
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", credentials.client_id()),
+            ("client_secret", credentials.client_secret()),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+        ])
+        .send()
+        .await
+        .context("Code exchange HTTP request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!("Code exchange failed (HTTP {status}): {body}");
+    }
+
+    let resp: CodeExchangeResponse = response
+        .json()
+        .await
+        .context("Failed to parse code exchange response")?;
+
+    let refresh_token = resp
+        .refresh_token
+        .context("No refresh_token in response. Ensure prompt=consent and access_type=offline.")?;
+
+    Ok((resp.access_token, refresh_token))
 }
 
 /// XOAUTH2 SASL authenticator for async-imap.

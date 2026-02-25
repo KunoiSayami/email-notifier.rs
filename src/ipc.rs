@@ -12,7 +12,10 @@ use interprocess::local_socket::{
     traits::tokio::{Listener as _, Stream as _},
 };
 
+use teloxide::prelude::*;
+
 use crate::db::{self, NewAccount};
+use crate::telegram;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -35,6 +38,10 @@ pub enum IpcRequest {
     },
     RemoveAccount {
         id: i64,
+    },
+    SendNotification {
+        chat_id: i64,
+        message: String,
     },
 }
 
@@ -68,6 +75,7 @@ pub struct IpcAccountInfo {
 pub async fn run_ipc_server(
     socket_name: String,
     pool: SqlitePool,
+    bot: Bot,
     reload_notify: Arc<Notify>,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -91,6 +99,7 @@ pub async fn run_ipc_server(
             }
         };
         let pool = pool.clone();
+        let bot = bot.clone();
         let reload_notify = reload_notify.clone();
 
         tokio::spawn(async move {
@@ -99,7 +108,7 @@ pub async fn run_ipc_server(
 
             while let Ok(Some(line)) = lines.next_line().await {
                 let response = match serde_json::from_str::<IpcRequest>(&line) {
-                    Ok(req) => handle_request(req, &pool, &reload_notify).await,
+                    Ok(req) => handle_request(req, &pool, &bot, &reload_notify).await,
                     Err(e) => IpcResponse::Error {
                         message: format!("Invalid request: {e}"),
                     },
@@ -118,7 +127,12 @@ pub async fn run_ipc_server(
     }
 }
 
-async fn handle_request(req: IpcRequest, pool: &SqlitePool, reload_notify: &Notify) -> IpcResponse {
+async fn handle_request(
+    req: IpcRequest,
+    pool: &SqlitePool,
+    bot: &Bot,
+    reload_notify: &Notify,
+) -> IpcResponse {
     match req {
         IpcRequest::Reload => {
             reload_notify.notify_one();
@@ -189,5 +203,15 @@ async fn handle_request(req: IpcRequest, pool: &SqlitePool, reload_notify: &Noti
                 message: format!("Failed to remove account: {e}"),
             },
         },
+        IpcRequest::SendNotification { chat_id, message } => {
+            match telegram::send_notification(bot, chat_id, &message).await {
+                Ok(()) => IpcResponse::Ok {
+                    message: "Notification sent".into(),
+                },
+                Err(e) => IpcResponse::Error {
+                    message: format!("Failed to send notification: {e}"),
+                },
+            }
+        }
     }
 }

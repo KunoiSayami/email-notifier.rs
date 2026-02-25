@@ -2,9 +2,9 @@ use anyhow::{Result, bail};
 use clap::Args;
 use sqlx::SqlitePool;
 
-use crate::db::{self, NewAccount};
-use crate::oauth;
-use crate::provider;
+use email_notifier::db::{self, NewAccount};
+use email_notifier::oauth;
+use email_notifier::provider;
 
 #[derive(Args)]
 pub struct AddArgs {

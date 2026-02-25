@@ -7,3 +7,22 @@ path = "email-notifier.db"
 
 [log]
 level = "info"
+
+[ipc]
+socket_name = "email-notifier.sock"
+
+# OAuth credentials for the authorization code flow.
+# Get Google credentials at: https://console.cloud.google.com/apis/credentials
+# Get Microsoft credentials at: https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps
+# The redirect_uri must match what you configured in the provider's console
+# and point to the email-notifier-oauth callback server.
+
+[oauth.google]
+client_id = "YOUR_GOOGLE_CLIENT_ID"
+client_secret = "YOUR_GOOGLE_CLIENT_SECRET"
+redirect_uri = "https://example.com/oauth/callback"
+
+[oauth.microsoft]
+client_id = "YOUR_MICROSOFT_CLIENT_ID"
+client_secret = "YOUR_MICROSOFT_CLIENT_SECRET"
+redirect_uri = "https://example.com/oauth/callback"

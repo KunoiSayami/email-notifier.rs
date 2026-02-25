@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use sqlx::SqlitePool;
 
-use crate::db;
+use email_notifier::db;
 
 #[derive(Args)]
 pub struct RemoveArgs {

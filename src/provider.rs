@@ -61,3 +61,11 @@ pub fn lookup(name: &str) -> Option<&'static Provider> {
 pub fn all() -> &'static [(&'static str, Provider)] {
     BUILT_IN
 }
+
+/// Look up the built-in provider for an OAuth provider.
+pub fn lookup_by_oauth_provider(oauth_provider: crate::oauth::OAuthProvider) -> &'static Provider {
+    match oauth_provider {
+        crate::oauth::OAuthProvider::Google => lookup("gmail").unwrap(),
+        crate::oauth::OAuthProvider::Microsoft => lookup("outlook").unwrap(),
+    }
+}

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-use crate::db;
+use email_notifier::db;
 
 pub async fn run(pool: &SqlitePool) -> Result<()> {
     let accounts = db::list_accounts(pool).await?;

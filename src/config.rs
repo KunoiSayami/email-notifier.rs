@@ -41,6 +41,7 @@ pub struct OAuthConfig {
 pub struct OAuthClientCredentials {
     client_id: String,
     client_secret: String,
+    redirect_uri: Option<String>,
 }
 
 impl OAuthClientCredentials {
@@ -50,6 +51,10 @@ impl OAuthClientCredentials {
 
     pub fn client_secret(&self) -> &str {
         &self.client_secret
+    }
+
+    pub fn redirect_uri(&self) -> Option<&str> {
+        self.redirect_uri.as_deref()
     }
 }
 

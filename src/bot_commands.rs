@@ -1,9 +1,14 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
-use teloxide::{prelude::*, types::ParseMode, utils::command::BotCommands};
+use teloxide::{
+    prelude::*,
+    types::{LinkPreviewOptions, ParseMode},
+    utils::command::BotCommands,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    config::OAuthConfig,
     db::{self, NewAccount},
     email_formatter::escape_html,
     oauth, provider,
@@ -28,7 +33,6 @@ enum Command {
         label: String,
         provider: String,
         username: String,
-        refresh_token: String,
     },
     List,
     #[command(parse_with = "split")]
@@ -45,6 +49,7 @@ pub async fn run_command_handler(
     bot: Bot,
     pool: SqlitePool,
     admin_chat_id: i64,
+    oauth_config: OAuthConfig,
     cancel: CancellationToken,
 ) {
     let handler = Update::filter_message()
@@ -52,7 +57,7 @@ pub async fn run_command_handler(
         .endpoint(handle_command);
 
     let mut dispatcher = Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![pool, admin_chat_id])
+        .dependencies(dptree::deps![pool, admin_chat_id, oauth_config])
         .default_handler(|_upd| async {})
         .error_handler(LoggingErrorHandler::with_custom_text(
             "Error in command handler",
@@ -77,6 +82,7 @@ async fn handle_command(
     cmd: Command,
     pool: SqlitePool,
     admin_chat_id: i64,
+    oauth_config: OAuthConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chat_id = msg.chat.id.0;
 
@@ -109,24 +115,12 @@ async fn handle_command(
             label,
             provider,
             username,
-            refresh_token,
         } => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
                 reply_unauthorized(&bot, &msg).await?;
                 return Ok(());
             }
-            handle_add_oauth(
-                &bot,
-                &msg,
-                &pool,
-                &label,
-                &provider,
-                &username,
-                &refresh_token,
-            )
-            .await?;
-            // Delete message to remove refresh token from chat history (best-effort).
-            bot.delete_message(msg.chat.id, msg.id).await.ok();
+            handle_add_oauth(&bot, &msg, &oauth_config, &label, &provider, &username).await?;
         }
         Command::List => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
@@ -267,11 +261,10 @@ async fn handle_add(
 async fn handle_add_oauth(
     bot: &Bot,
     msg: &Message,
-    pool: &SqlitePool,
+    oauth_config: &OAuthConfig,
     label: &str,
     provider_name: &str,
     username: &str,
-    refresh_token: &str,
 ) -> Result<()> {
     let chat_id = msg.chat.id.0;
 
@@ -279,35 +272,61 @@ async fn handle_add_oauth(
         anyhow::anyhow!("Unknown provider. Use /providers to see available options.")
     })?;
 
-    if oauth::OAuthProvider::from_imap_host(p.imap_host()).is_none() {
-        bot.send_message(
-            msg.chat.id,
-            "This provider does not support OAuth. Use /add instead.",
-        )
-        .await?;
-        return Ok(());
-    }
-
-    let account = NewAccount {
-        label,
-        imap_host: p.imap_host(),
-        imap_port: p.imap_port(),
-        username,
-        password: "",
-        auth_method: "xoauth2",
-        refresh_token: Some(refresh_token),
+    let oauth_provider = oauth::OAuthProvider::from_imap_host(p.imap_host());
+    let oauth_provider = match oauth_provider {
+        Some(op) => op,
+        None => {
+            bot.send_message(
+                msg.chat.id,
+                "This provider does not support OAuth. Use /add instead.",
+            )
+            .await?;
+            return Ok(());
+        }
     };
 
-    let id = db::add_account(pool, &account, chat_id).await?;
+    let credentials = oauth::get_credentials(oauth_config, oauth_provider)?;
+    let redirect_uri = credentials.redirect_uri().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No redirect_uri configured for {}. Set it in [oauth.{}] config.",
+            oauth_provider.name(),
+            provider_name.to_ascii_lowercase(),
+        )
+    })?;
+
+    let state = oauth::OAuthState {
+        label: label.to_owned(),
+        provider_name: provider_name.to_owned(),
+        username: username.to_owned(),
+        chat_id,
+    };
+    let state_encoded = state.encode();
+
+    let auth_url = oauth::build_authorization_url(
+        oauth_provider,
+        credentials,
+        redirect_uri,
+        &state_encoded,
+        username,
+    )?;
+
     let text = format!(
-        "OAuth account added (id: {id}).\n<code>{}</code> via {}",
-        escape_html(label),
-        escape_html(provider_name),
+        "Click the link below to authorize:\n\n\
+         <a href=\"{auth_url}\">Authorize {}</a>\n\n\
+         After granting access, the account will be added automatically.",
+        escape_html(oauth_provider.name()),
     );
     bot.send_message(msg.chat.id, text)
         .parse_mode(ParseMode::Html)
+        .link_preview_options(LinkPreviewOptions {
+            is_disabled: true,
+            url: None,
+            prefer_small_media: false,
+            prefer_large_media: false,
+            show_above_text: false,
+        })
         .await?;
-    tracing::info!("OAuth account added via bot: id={id}, label={label}, chat_id={chat_id}");
+    tracing::info!("OAuth auth URL sent: provider={provider_name}, chat_id={chat_id}");
     Ok(())
 }
 

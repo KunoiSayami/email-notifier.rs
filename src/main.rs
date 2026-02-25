@@ -1,19 +1,11 @@
-mod bot_commands;
 mod cli;
-mod config;
-mod db;
-mod email_formatter;
-mod imap_monitor;
-mod ipc;
-mod oauth;
-mod provider;
-mod telegram;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{AccountAction, Cli, Command, IpcAction};
+use email_notifier::{bot_commands, config, db, imap_monitor, ipc, telegram};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
@@ -71,13 +63,17 @@ async fn run_daemon(
     let reload_notify = Arc::new(Notify::new());
     let shutdown_token = CancellationToken::new();
 
+    // Create an initial bot instance for the IPC server (lives for the entire daemon lifetime).
+    let ipc_bot = telegram::create_bot(&current_config.telegram.bot_token);
+
     // Spawn IPC server (lives for the entire daemon lifetime).
     let ipc_socket_name = current_config.ipc().socket_name().to_owned();
     let ipc_pool = pool.clone();
     let ipc_reload = reload_notify.clone();
     let ipc_cancel = shutdown_token.child_token();
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::run_ipc_server(ipc_socket_name, ipc_pool, ipc_reload, ipc_cancel).await
+        if let Err(e) =
+            ipc::run_ipc_server(ipc_socket_name, ipc_pool, ipc_bot, ipc_reload, ipc_cancel).await
         {
             tracing::error!("IPC server error: {e:#}");
         }
@@ -113,6 +109,7 @@ async fn run_daemon(
             bot.clone(),
             pool.clone(),
             admin_chat_id,
+            oauth_config.clone(),
             shutdown_token.child_token(),
         ));
         handles.push(cmd_handle);

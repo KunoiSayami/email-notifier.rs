@@ -3,9 +3,17 @@ name = "email-notifier"
 version = "0.5.0"
 edition = "2024"
 
+[lib]
+name = "email_notifier"
+path = "src/lib.rs"
+
 [[bin]]
 name = "email-notifier"
 path = "src/main.rs"
+
+[[bin]]
+name = "email-notifier-oauth"
+path = "src/oauth_server.rs"
 
 [dependencies]
 # Async runtime
@@ -56,6 +64,12 @@ reqwest = { version = "0.13", features = [
     "json",
     "rustls",
 ], default-features = false }
+
+# HTTP server (OAuth callback)
+axum = "0.8"
+
+# Encoding
+base64 = "0.22"
 
 # Utilities
 futures = "0.3"

@@ -1,0 +1,1 @@
+ALTER TABLE bot_users ADD COLUMN notified_admin INTEGER NOT NULL DEFAULT 0;

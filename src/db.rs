@@ -260,6 +260,7 @@ pub struct BotUser {
     #[allow(unused)]
     started_at: String,
     privilege: i64,
+    notified_admin: bool,
 }
 
 impl BotUser {
@@ -290,6 +291,10 @@ impl BotUser {
 
     pub fn privilege(&self) -> i64 {
         self.privilege
+    }
+
+    pub fn notified_admin(&self) -> bool {
+        self.notified_admin
     }
 }
 
@@ -358,4 +363,33 @@ pub async fn allow_user(pool: &SqlitePool, chat_id: i64) -> Result<bool> {
         .context("Failed to allow user")?;
 
     Ok(result.rows_affected() > 0)
+}
+
+/// Look up a bot user by chat_id.
+pub async fn get_bot_user(pool: &SqlitePool, chat_id: i64) -> Result<Option<BotUser>> {
+    sqlx::query_as::<_, BotUser>("SELECT * FROM bot_users WHERE chat_id = ?")
+        .bind(chat_id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to get bot user")
+}
+
+/// Mark that the admin has been notified about this user's authorization request.
+pub async fn mark_admin_notified(pool: &SqlitePool, chat_id: i64) -> Result<()> {
+    sqlx::query("UPDATE bot_users SET notified_admin = 1 WHERE chat_id = ?")
+        .bind(chat_id)
+        .execute(pool)
+        .await
+        .context("Failed to mark admin notified")?;
+    Ok(())
+}
+
+/// Reset the admin-notified flag (e.g. after denial, so user can re-request).
+pub async fn reset_admin_notified(pool: &SqlitePool, chat_id: i64) -> Result<()> {
+    sqlx::query("UPDATE bot_users SET notified_admin = 0 WHERE chat_id = ?")
+        .bind(chat_id)
+        .execute(pool)
+        .await
+        .context("Failed to reset admin notified")?;
+    Ok(())
 }

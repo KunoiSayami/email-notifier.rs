@@ -2,7 +2,9 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 use teloxide::{
     prelude::*,
-    types::{LinkPreviewOptions, ParseMode},
+    types::{
+        CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, ParseMode,
+    },
     utils::command::BotCommands,
 };
 use tokio_util::sync::CancellationToken;
@@ -52,9 +54,13 @@ pub async fn run_command_handler(
     oauth_config: OAuthConfig,
     cancel: CancellationToken,
 ) {
-    let handler = Update::filter_message()
-        .filter_command::<Command>()
-        .endpoint(handle_command);
+    let handler = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Command>()
+                .endpoint(handle_command),
+        )
+        .branch(Update::filter_callback_query().endpoint(handle_callback_query));
 
     let mut dispatcher = Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool, admin_chat_id, oauth_config])
@@ -97,7 +103,7 @@ async fn handle_command(
             password,
         } => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
-                reply_unauthorized(&bot, &msg).await?;
+                reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_add(
@@ -117,28 +123,28 @@ async fn handle_command(
             username,
         } => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
-                reply_unauthorized(&bot, &msg).await?;
+                reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_add_oauth(&bot, &msg, &oauth_config, &label, &provider, &username).await?;
         }
         Command::List => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
-                reply_unauthorized(&bot, &msg).await?;
+                //reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_list(&bot, &msg, &pool).await?;
         }
         Command::Remove { id } => {
             if !is_authorized(&pool, chat_id, admin_chat_id).await? {
-                reply_unauthorized(&bot, &msg).await?;
+                //reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_remove(&bot, &msg, &pool, id).await?;
         }
         Command::Allow { target_chat_id } => {
             if chat_id != admin_chat_id {
-                reply_unauthorized(&bot, &msg).await?;
+                //reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_allow(&bot, &msg, &pool, target_chat_id).await?;
@@ -155,12 +161,45 @@ async fn is_authorized(pool: &SqlitePool, chat_id: i64, admin_chat_id: i64) -> R
     db::is_user_allowed(pool, chat_id).await
 }
 
-async fn reply_unauthorized(bot: &Bot, msg: &Message) -> Result<()> {
+async fn reply_unauthorized(
+    bot: &Bot,
+    msg: &Message,
+    pool: &SqlitePool,
+    admin_chat_id: i64,
+) -> Result<()> {
+    let chat_id = msg.chat.id.0;
+
     bot.send_message(
         msg.chat.id,
-        "Not authorized. Send /id and ask the admin to /allow your ID.",
+        "Not authorized. The admin has been notified of your request.",
     )
     .await?;
+
+    // Only notify admin if the user has /start-ed and hasn't been notified yet.
+    if let Some(user) = db::get_bot_user(pool, chat_id).await? {
+        if user.notified_admin() {
+            return Ok(());
+        }
+
+        let text = format_auth_request(
+            chat_id,
+            user.username(),
+            user.first_name(),
+            user.last_name(),
+        );
+        let keyboard = InlineKeyboardMarkup::new(vec![vec![
+            InlineKeyboardButton::callback("✅ Allow", format!("allow:{chat_id}")),
+            InlineKeyboardButton::callback("❌ Deny", format!("deny:{chat_id}")),
+        ]]);
+
+        bot.send_message(ChatId(admin_chat_id), text)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(keyboard)
+            .await?;
+
+        db::mark_admin_notified(pool, chat_id).await?;
+    }
+
     Ok(())
 }
 
@@ -414,7 +453,28 @@ fn format_admin_notification(
     last_name: Option<&str>,
 ) -> String {
     let mut msg = String::from("👤 <b>New user started the bot</b>\n\n");
+    format_user_info(&mut msg, chat_id, username, first_name, last_name);
+    msg
+}
 
+fn format_auth_request(
+    chat_id: i64,
+    username: Option<&str>,
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+) -> String {
+    let mut msg = String::from("🔐 <b>Authorization request</b>\n\n");
+    format_user_info(&mut msg, chat_id, username, first_name, last_name);
+    msg
+}
+
+fn format_user_info(
+    msg: &mut String,
+    chat_id: i64,
+    username: Option<&str>,
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+) {
     if let Some(first) = first_name {
         msg.push_str(&format!("<b>Name:</b> {}", escape_html(first)));
         if let Some(last) = last_name {
@@ -428,6 +488,79 @@ fn format_admin_notification(
     }
 
     msg.push_str(&format!("<b>Chat ID:</b> <code>{chat_id}</code>"));
+}
 
-    msg
+async fn handle_callback_query(
+    bot: Bot,
+    q: CallbackQuery,
+    pool: SqlitePool,
+    admin_chat_id: i64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let caller_chat_id = q.from.id.0 as i64;
+    if caller_chat_id != admin_chat_id {
+        bot.answer_callback_query(q.id.clone())
+            .text("Not authorized.")
+            .await?;
+        return Ok(());
+    }
+
+    let data = q.data.as_deref().unwrap_or("");
+
+    if let Some(target_str) = data.strip_prefix("allow:") {
+        let target_chat_id: i64 = target_str.parse()?;
+        let allowed = db::allow_user(&pool, target_chat_id).await?;
+
+        if let Some(msg) = q.regular_message() {
+            let original = msg.text().unwrap_or("");
+            let status = if allowed {
+                "✅ Allowed"
+            } else {
+                "⚠️ User not found (hasn't /start-ed)"
+            };
+            bot.edit_message_text(
+                msg.chat.id,
+                msg.id,
+                format!("{original}\n\n<b>Status:</b> {status}"),
+            )
+            .parse_mode(ParseMode::Html)
+            .await
+            .ok();
+        }
+
+        if allowed {
+            send_notification(
+                &bot,
+                target_chat_id,
+                "✅ You have been authorized! You can now use bot commands.",
+            )
+            .await
+            .ok();
+        }
+
+        bot.answer_callback_query(q.id.clone()).await?;
+    } else if let Some(target_str) = data.strip_prefix("deny:") {
+        let target_chat_id: i64 = target_str.parse()?;
+
+        if let Some(msg) = q.regular_message() {
+            let original = msg.text().unwrap_or("");
+            bot.edit_message_text(
+                msg.chat.id,
+                msg.id,
+                format!("{original}\n\n<b>Status:</b> ❌ Denied"),
+            )
+            .parse_mode(ParseMode::Html)
+            .await
+            .ok();
+        }
+
+        send_notification(&bot, target_chat_id, "Your access request was denied.")
+            .await
+            .ok();
+
+        db::reset_admin_notified(&pool, target_chat_id).await?;
+
+        bot.answer_callback_query(q.id.clone()).await?;
+    }
+
+    Ok(())
 }

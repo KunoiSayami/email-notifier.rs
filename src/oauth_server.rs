@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use axum::{
     Router,
@@ -10,7 +12,6 @@ use axum::{
     routing::get,
 };
 use clap::Parser;
-use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use interprocess::local_socket::{
@@ -66,17 +67,28 @@ async fn health() -> &'static str {
     "ok"
 }
 
-#[derive(Deserialize)]
-struct CallbackParams {
-    code: String,
-    state: String,
-}
-
 async fn oauth_callback(
     State(state): State<Arc<AppState>>,
-    Query(params): Query<CallbackParams>,
+    Query(raw_params): Query<HashMap<String, String>>,
 ) -> Html<String> {
-    match handle_callback(&state, &params.code, &params.state).await {
+    tracing::trace!(?raw_params, "Received OAuth callback query params");
+
+    let (code, oauth_state) = match (raw_params.get("code"), raw_params.get("state")) {
+        (Some(c), Some(s)) => (c.clone(), s.clone()),
+        _ => {
+            tracing::error!(?raw_params, "Missing required OAuth callback params");
+            return Html(format!(
+                "<!DOCTYPE html><html><body>\
+                 <h1>Error</h1><p>Missing required callback parameters.</p>\
+                 <p>Received params: <code>{}</code></p>\
+                 <p>Please try again with /addoauth in Telegram.</p>\
+                 </body></html>",
+                email_formatter::escape_html(&format!("{raw_params:?}")),
+            ));
+        }
+    };
+
+    match handle_callback(&state, &code, &oauth_state).await {
         Ok(msg) => Html(format!(
             "<!DOCTYPE html><html><body>\
              <h1>Success</h1><p>{msg}</p>\
@@ -99,6 +111,7 @@ async fn oauth_callback(
 async fn handle_callback(state: &AppState, code: &str, state_param: &str) -> Result<String> {
     // Decode session data from state parameter.
     let oauth_state = oauth::OAuthState::decode(state_param)?;
+    tracing::trace!(?oauth_state, "Decoded OAuth state");
 
     // Resolve provider.
     let oauth_provider = oauth::OAuthProvider::from_name(&oauth_state.provider_name)
@@ -108,10 +121,12 @@ async fn handle_callback(state: &AppState, code: &str, state_param: &str) -> Res
     let redirect_uri = credentials
         .redirect_uri()
         .context("No redirect_uri in config")?;
+    tracing::trace!(%redirect_uri, provider = %oauth_provider.name(), "Exchanging authorization code");
 
     // Exchange authorization code for tokens.
     let (_access_token, refresh_token) =
         oauth::exchange_authorization_code(oauth_provider, credentials, redirect_uri, code).await?;
+    tracing::trace!("Token exchange completed successfully");
 
     // Look up IMAP details.
     let p = provider::lookup_by_oauth_provider(oauth_provider);

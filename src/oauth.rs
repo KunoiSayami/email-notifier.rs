@@ -37,7 +37,7 @@ impl OAuthProvider {
     pub fn scopes(&self) -> &'static str {
         match self {
             Self::Google => "https://mail.google.com/",
-            Self::Microsoft => "offline_access https://outlook.office365.com/IMAP.AccessAsUser.All",
+            Self::Microsoft => "offline_access https://outlook.office.com/IMAP.AccessAsUser.All",
         }
     }
 

@@ -86,6 +86,14 @@ impl Default for IpcConfig {
 pub struct TelegramConfig {
     pub bot_token: String,
     pub admin_chat_id: i64,
+    #[serde(default)]
+    bypass_registration: bool,
+}
+
+impl TelegramConfig {
+    pub fn bypass_registration(&self) -> bool {
+        self.bypass_registration
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

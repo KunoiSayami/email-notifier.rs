@@ -105,10 +105,12 @@ async fn run_daemon(
         }
 
         // Spawn the Telegram command handler (listens for /start etc.).
+        let bypass_registration = current_config.telegram.bypass_registration();
         let cmd_handle = tokio::spawn(bot_commands::run_command_handler(
             bot.clone(),
             pool.clone(),
             admin_chat_id,
+            bypass_registration,
             oauth_config.clone(),
             shutdown_token.child_token(),
         ));

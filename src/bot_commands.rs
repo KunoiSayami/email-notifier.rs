@@ -51,6 +51,7 @@ pub async fn run_command_handler(
     bot: Bot,
     pool: SqlitePool,
     admin_chat_id: i64,
+    bypass_registration: bool,
     oauth_config: OAuthConfig,
     cancel: CancellationToken,
 ) {
@@ -63,7 +64,12 @@ pub async fn run_command_handler(
         .branch(Update::filter_callback_query().endpoint(handle_callback_query));
 
     let mut dispatcher = Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![pool, admin_chat_id, oauth_config])
+        .dependencies(dptree::deps![
+            pool,
+            admin_chat_id,
+            bypass_registration,
+            oauth_config
+        ])
         .default_handler(|_upd| async {})
         .error_handler(LoggingErrorHandler::with_custom_text(
             "Error in command handler",
@@ -88,6 +94,7 @@ async fn handle_command(
     cmd: Command,
     pool: SqlitePool,
     admin_chat_id: i64,
+    bypass_registration: bool,
     oauth_config: OAuthConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chat_id = msg.chat.id.0;
@@ -102,7 +109,7 @@ async fn handle_command(
             username,
             password,
         } => {
-            if !is_authorized(&pool, chat_id, admin_chat_id).await? {
+            if !is_authorized(&pool, chat_id, admin_chat_id, bypass_registration).await? {
                 reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
@@ -122,21 +129,21 @@ async fn handle_command(
             provider,
             username,
         } => {
-            if !is_authorized(&pool, chat_id, admin_chat_id).await? {
+            if !is_authorized(&pool, chat_id, admin_chat_id, bypass_registration).await? {
                 reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_add_oauth(&bot, &msg, &oauth_config, &label, &provider, &username).await?;
         }
         Command::List => {
-            if !is_authorized(&pool, chat_id, admin_chat_id).await? {
+            if !is_authorized(&pool, chat_id, admin_chat_id, bypass_registration).await? {
                 //reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
             handle_list(&bot, &msg, &pool).await?;
         }
         Command::Remove { id } => {
-            if !is_authorized(&pool, chat_id, admin_chat_id).await? {
+            if !is_authorized(&pool, chat_id, admin_chat_id, bypass_registration).await? {
                 //reply_unauthorized(&bot, &msg, &pool, admin_chat_id).await?;
                 return Ok(());
             }
@@ -154,8 +161,13 @@ async fn handle_command(
     Ok(())
 }
 
-async fn is_authorized(pool: &SqlitePool, chat_id: i64, admin_chat_id: i64) -> Result<bool> {
-    if chat_id == admin_chat_id {
+async fn is_authorized(
+    pool: &SqlitePool,
+    chat_id: i64,
+    admin_chat_id: i64,
+    bypass_registration: bool,
+) -> Result<bool> {
+    if bypass_registration || chat_id == admin_chat_id {
         return Ok(true);
     }
     db::is_user_allowed(pool, chat_id).await

@@ -18,7 +18,7 @@ use crate::{
     telegram::send_notification,
 };
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60); // 25 min (RFC 2177 recommends <29 min)
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60); // 25 min (RFC 2177 recommends <29 min)
 const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(5);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
 

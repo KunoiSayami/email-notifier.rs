@@ -8,11 +8,11 @@ name = "email_notifier"
 path = "src/lib.rs"
 
 [[bin]]
-name = "email-notifier"
+name = "core"
 path = "src/main.rs"
 
 [[bin]]
-name = "email-notifier-oauth"
+name = "oauth"
 path = "src/oauth_server.rs"
 
 [dependencies]
@@ -51,7 +51,7 @@ mailparse = "0.16"
 anyhow = "1"
 
 # Logging
-tracing = "0.1"
+tracing = { version = "0.1", features = ["release_max_level_info"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # IPC

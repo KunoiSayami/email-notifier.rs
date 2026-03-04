@@ -20,9 +20,15 @@ use crate::{
 #[derive(BotCommands, Clone)]
 #[command(rename_rule = "lowercase")]
 enum Command {
+    #[command(description = "Register as a new user")]
     Start,
+    #[command(description = "Show available commands")]
+    Help,
+    #[command(description = "Show your chat ID")]
     Id,
+    #[command(description = "List supported email providers")]
     Providers,
+    #[command(description = "Add email account (password auth)")]
     #[command(parse_with = "split")]
     Add {
         label: String,
@@ -30,21 +36,21 @@ enum Command {
         username: String,
         password: String,
     },
+    #[command(description = "Add email account (OAuth)")]
     #[command(parse_with = "split")]
     Addoauth {
         label: String,
         provider: String,
         username: String,
     },
+    #[command(description = "List your email accounts")]
     List,
+    #[command(description = "Remove an email account")]
     #[command(parse_with = "split")]
-    Remove {
-        id: i64,
-    },
+    Remove { id: i64 },
+    #[command(description = "Approve a user (admin only)")]
     #[command(parse_with = "split")]
-    Allow {
-        target_chat_id: i64,
-    },
+    Allow { target_chat_id: i64 },
 }
 
 pub async fn run_command_handler(
@@ -60,6 +66,11 @@ pub async fn run_command_handler(
             Update::filter_message()
                 .filter_command::<Command>()
                 .endpoint(handle_command),
+        )
+        .branch(
+            Update::filter_message()
+                .filter(|msg: Message| msg.text().is_some_and(|text| text.starts_with('/')))
+                .endpoint(handle_unknown_command),
         )
         .branch(Update::filter_callback_query().endpoint(handle_callback_query));
 
@@ -101,6 +112,7 @@ async fn handle_command(
 
     match cmd {
         Command::Start => handle_start(&bot, &msg, &pool, admin_chat_id).await?,
+        Command::Help => handle_help(&bot, &msg).await?,
         Command::Id => handle_id(&bot, &msg).await?,
         Command::Providers => handle_providers(&bot, &msg).await?,
         Command::Add {
@@ -228,8 +240,11 @@ async fn handle_start(
     let first_name = user.map(|u| u.first_name.as_str());
     let last_name = user.and_then(|u| u.last_name.as_deref());
 
-    bot.send_message(msg.chat.id, "Welcome! The bot admin has been notified.")
-        .await?;
+    bot.send_message(
+        msg.chat.id,
+        "Welcome! Use /help to show more detailed usage",
+    )
+    .await?;
 
     let is_new = db::register_bot_user(pool, chat_id, username, first_name, last_name).await?;
 
@@ -241,6 +256,49 @@ async fn handle_start(
         tracing::debug!("Existing user re-started bot: chat_id={chat_id}");
     }
 
+    Ok(())
+}
+
+async fn handle_unknown_command(
+    bot: Bot,
+    msg: Message,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    bot.send_message(
+        msg.chat.id,
+        "Unknown command. Use /help to see available commands.",
+    )
+    .await?;
+    Ok(())
+}
+
+async fn handle_help(bot: &Bot, msg: &Message) -> Result<()> {
+    let text = concat!(
+        "<b>Available commands:</b>\n",
+        "\n/start — Register as a new user",
+        "\n/help — Show this help message",
+        "\n/id — Show your chat ID",
+        "\n/providers — List supported email providers",
+        "\n/list — List your email accounts",
+        "\n",
+        "\n/add <code>&lt;label&gt;</code> <code>&lt;provider_or_host&gt;</code> <code>&lt;username&gt;</code> <code>&lt;password&gt;</code>",
+        "\n  Add an email account with password authentication.",
+        "\n  <code>label</code> — A name for this account (e.g. <i>work</i>)",
+        "\n  <code>provider_or_host</code> — Built-in provider name (see /providers) or <i>host:port</i>",
+        "\n  <code>username</code> — Email address",
+        "\n  <code>password</code> — Email password or app-specific password",
+        "\n",
+        "\n/addoauth <code>&lt;label&gt;</code> <code>&lt;provider&gt;</code> <code>&lt;username&gt;</code>",
+        "\n  Add an email account with OAuth authentication.",
+        "\n  <code>label</code> — A name for this account",
+        "\n  <code>provider</code> — Built-in provider name (e.g. <i>gmail</i>, <i>outlook</i>)",
+        "\n  <code>username</code> — Email address",
+        "\n",
+        "\n/remove <code>&lt;account_id&gt;</code>",
+        "\n  Remove an email account. Use /list to find the account ID."
+    );
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html)
+        .await?;
     Ok(())
 }
 
@@ -297,10 +355,9 @@ async fn handle_add(
 
     let id = db::add_account(pool, &account, chat_id).await?;
     let text = format!(
-        "Account added (id: {id}).\n<code>{}</code> → {}:{}",
+        "Account added (id: {id}).\n<code>{}</code> → {}:{imap_port}",
         escape_html(label),
         escape_html(&imap_host),
-        imap_port
     );
     bot.send_message(msg.chat.id, text)
         .parse_mode(ParseMode::Html)

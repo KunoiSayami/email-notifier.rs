@@ -393,3 +393,63 @@ pub async fn reset_admin_notified(pool: &SqlitePool, chat_id: i64) -> Result<()>
         .context("Failed to reset admin notified")?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Email bodies (for "Show more" / "Show less")
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct EmailBody {
+    #[allow(unused)]
+    id: i64,
+    header_html: String,
+    full_body: String,
+    attachments_html: String,
+    #[allow(unused)]
+    created_at: String,
+}
+
+impl EmailBody {
+    pub fn header_html(&self) -> &str {
+        &self.header_html
+    }
+
+    pub fn full_body(&self) -> &str {
+        &self.full_body
+    }
+
+    pub fn attachments_html(&self) -> &str {
+        &self.attachments_html
+    }
+}
+
+/// Store email body parts for the "Show more" feature. Returns the row ID.
+pub async fn store_email_body(
+    pool: &SqlitePool,
+    header_html: &str,
+    full_body: &str,
+    attachments_html: &str,
+) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO email_bodies (header_html, full_body, attachments_html) \
+         VALUES (?, ?, ?) RETURNING id",
+    )
+    .bind(header_html)
+    .bind(full_body)
+    .bind(attachments_html)
+    .fetch_one(pool)
+    .await
+    .context("Failed to store email body")
+}
+
+/// Retrieve stored email body parts by ID.
+pub async fn get_email_body(pool: &SqlitePool, id: i64) -> Result<Option<EmailBody>> {
+    sqlx::query_as::<_, EmailBody>(
+        "SELECT id, header_html, full_body, attachments_html, created_at \
+         FROM email_bodies WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to get email body")
+}

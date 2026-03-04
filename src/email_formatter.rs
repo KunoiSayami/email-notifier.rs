@@ -1,11 +1,15 @@
 use anyhow::Result;
 use mailparse::{MailHeaderMap, ParsedMail};
 
+const PREVIEW_MAX_CHARS: usize = 200;
+const TELEGRAM_MAX_LEN: usize = 4096;
+
 pub struct ParsedEmail {
     from: String,
     subject: String,
     date: String,
     body_preview: String,
+    body_full: String,
     attachments: Vec<String>,
 }
 
@@ -26,8 +30,31 @@ impl ParsedEmail {
         &self.body_preview
     }
 
+    pub fn body_full(&self) -> &str {
+        &self.body_full
+    }
+
     pub fn attachments(&self) -> &[String] {
         &self.attachments
+    }
+
+    pub fn was_truncated(&self) -> bool {
+        self.body_full.len() > self.body_preview.len()
+    }
+}
+
+pub struct FormattedParts {
+    header_html: String,
+    attachments_html: String,
+}
+
+impl FormattedParts {
+    pub fn header_html(&self) -> &str {
+        &self.header_html
+    }
+
+    pub fn attachments_html(&self) -> &str {
+        &self.attachments_html
     }
 }
 
@@ -47,30 +74,32 @@ pub fn parse_email(raw: &[u8]) -> Result<ParsedEmail> {
         .get_first_value("Date")
         .unwrap_or_else(|| "(no date)".to_string());
 
-    let (body_preview, attachments) = extract_body_and_attachments(&mail);
+    let (body_full, body_preview, attachments) = extract_body_and_attachments(&mail);
 
     Ok(ParsedEmail {
         from,
         subject,
         date,
         body_preview,
+        body_full,
         attachments,
     })
 }
 
-fn extract_body_and_attachments(mail: &ParsedMail) -> (String, Vec<String>) {
+fn extract_body_and_attachments(mail: &ParsedMail) -> (String, String, Vec<String>) {
     let mut body = String::new();
     let mut attachments = Vec::new();
 
     visit_parts(mail, &mut body, &mut attachments, true);
 
-    let preview = if body.len() > 500 {
-        format!("{}…", &body[..500])
+    let truncated = truncate_at_char_boundary(&body, PREVIEW_MAX_CHARS);
+    let preview = if truncated.len() < body.len() {
+        format!("{truncated}…")
     } else {
-        body
+        body.clone()
     };
 
-    (preview, attachments)
+    (body, preview, attachments)
 }
 
 fn visit_parts(part: &ParsedMail, body: &mut String, attachments: &mut Vec<String>, is_root: bool) {
@@ -145,8 +174,9 @@ fn format_attachment_entry(filename: &str, size_bytes: usize) -> String {
     }
 }
 
-pub fn format_telegram_message(account_label: &str, email: &ParsedEmail) -> String {
-    let mut msg = format!(
+/// Build the header and attachments HTML portions of a Telegram message.
+pub fn format_message_parts(account_label: &str, email: &ParsedEmail) -> FormattedParts {
+    let header_html = format!(
         "📧 <b>New email</b> [{account_label}]\n\
          <b>From:</b> {from}\n\
          <b>Subject:</b> {subject}\n\
@@ -156,19 +186,63 @@ pub fn format_telegram_message(account_label: &str, email: &ParsedEmail) -> Stri
         date = escape_html(email.date()),
     );
 
-    if !email.body_preview().is_empty() {
-        msg.push_str("\n\n");
-        msg.push_str(&escape_html(email.body_preview()));
-    }
-
+    let mut attachments_html = String::new();
     if !email.attachments().is_empty() {
-        msg.push_str("\n\n<b>Attachments:</b>");
+        attachments_html.push_str("\n\n<b>Attachments:</b>");
         for att in email.attachments() {
-            msg.push_str(&format!("\n• {}", escape_html(att)));
+            attachments_html.push_str(&format!("\n• {}", escape_html(att)));
         }
     }
 
+    FormattedParts {
+        header_html,
+        attachments_html,
+    }
+}
+
+/// Assemble a complete Telegram message from stored parts and a body string.
+/// Truncates the body if the total would exceed Telegram's 4096-char limit.
+pub fn assemble_message(header_html: &str, body: &str, attachments_html: &str) -> String {
+    // 2 newlines before body + 2 before attachments (worst case)
+    let overhead = header_html.len() + attachments_html.len() + 4;
+    let body_budget = TELEGRAM_MAX_LEN.saturating_sub(overhead);
+
+    let escaped = escape_html(body);
+    let body_part = if escaped.len() > body_budget {
+        let truncated = truncate_at_char_boundary(&escaped, body_budget.saturating_sub(4));
+        format!("{truncated}…")
+    } else {
+        escaped
+    };
+
+    let mut msg = header_html.to_owned();
+    if !body_part.is_empty() {
+        msg.push_str("\n\n");
+        msg.push_str(&body_part);
+    }
+    if !attachments_html.is_empty() {
+        msg.push_str(attachments_html);
+    }
     msg
+}
+
+/// Build a preview body string (truncated with ellipsis) from the full body.
+pub fn make_preview(full_body: &str) -> String {
+    let truncated = truncate_at_char_boundary(full_body, PREVIEW_MAX_CHARS);
+    if truncated.len() < full_body.len() {
+        format!("{truncated}…")
+    } else {
+        full_body.to_owned()
+    }
+}
+
+pub fn format_telegram_message(account_label: &str, email: &ParsedEmail) -> String {
+    let parts = format_message_parts(account_label, email);
+    assemble_message(
+        parts.header_html(),
+        email.body_preview(),
+        parts.attachments_html(),
+    )
 }
 
 pub fn escape_html(s: &str) -> String {
@@ -176,4 +250,12 @@ pub fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Truncate a string at a char boundary, returning at most `max_chars` characters.
+pub fn truncate_at_char_boundary(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
 }

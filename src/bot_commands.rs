@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::OAuthConfig,
     db::{self, NewAccount},
-    email_formatter::escape_html,
+    email_formatter::{assemble_message, escape_html, make_preview},
     oauth, provider,
     telegram::send_notification,
 };
@@ -566,14 +566,28 @@ async fn handle_callback_query(
     admin_chat_id: i64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let caller_chat_id = q.from.id.0 as i64;
+    let data = q.data.as_deref().unwrap_or("");
+
+    // Show more / show less — available to any user
+    if let Some(id_str) = data.strip_prefix("show:") {
+        let body_id: i64 = id_str.parse()?;
+        handle_show_more(&bot, &q, &pool, body_id).await?;
+        bot.answer_callback_query(q.id.clone()).await?;
+        return Ok(());
+    } else if let Some(id_str) = data.strip_prefix("hide:") {
+        let body_id: i64 = id_str.parse()?;
+        handle_show_less(&bot, &q, &pool, body_id).await?;
+        bot.answer_callback_query(q.id.clone()).await?;
+        return Ok(());
+    }
+
+    // Admin-only callbacks below
     if caller_chat_id != admin_chat_id {
         bot.answer_callback_query(q.id.clone())
             .text("Not authorized.")
             .await?;
         return Ok(());
     }
-
-    let data = q.data.as_deref().unwrap_or("");
 
     if let Some(target_str) = data.strip_prefix("allow:") {
         let target_chat_id: i64 = target_str.parse()?;
@@ -629,6 +643,77 @@ async fn handle_callback_query(
         db::reset_admin_notified(&pool, target_chat_id).await?;
 
         bot.answer_callback_query(q.id.clone()).await?;
+    }
+
+    Ok(())
+}
+
+async fn handle_show_more(
+    bot: &Bot,
+    q: &CallbackQuery,
+    pool: &SqlitePool,
+    body_id: i64,
+) -> anyhow::Result<()> {
+    let Some(email_body) = db::get_email_body(pool, body_id).await? else {
+        bot.answer_callback_query(q.id.clone())
+            .text("Email body no longer available.")
+            .await?;
+        return Ok(());
+    };
+
+    let expanded = assemble_message(
+        email_body.header_html(),
+        email_body.full_body(),
+        email_body.attachments_html(),
+    );
+
+    let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        "Show less",
+        format!("hide:{body_id}"),
+    )]]);
+
+    if let Some(msg) = q.regular_message() {
+        bot.edit_message_text(msg.chat.id, msg.id, expanded)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(keyboard)
+            .await
+            .ok();
+    }
+
+    Ok(())
+}
+
+async fn handle_show_less(
+    bot: &Bot,
+    q: &CallbackQuery,
+    pool: &SqlitePool,
+    body_id: i64,
+) -> anyhow::Result<()> {
+    let Some(email_body) = db::get_email_body(pool, body_id).await? else {
+        bot.answer_callback_query(q.id.clone())
+            .text("Email body no longer available.")
+            .await?;
+        return Ok(());
+    };
+
+    let preview = make_preview(email_body.full_body());
+    let collapsed = assemble_message(
+        email_body.header_html(),
+        &preview,
+        email_body.attachments_html(),
+    );
+
+    let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        "Show more",
+        format!("show:{body_id}"),
+    )]]);
+
+    if let Some(msg) = q.regular_message() {
+        bot.edit_message_text(msg.chat.id, msg.id, collapsed)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(keyboard)
+            .await
+            .ok();
     }
 
     Ok(())

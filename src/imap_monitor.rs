@@ -10,15 +10,17 @@ use tokio::time::sleep;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 use tokio_util::sync::CancellationToken;
 
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup};
+
 use crate::{
     config::OAuthConfig,
     db::{self, EmailAccount},
-    email_formatter::{format_telegram_message, parse_email},
+    email_formatter::{assemble_message, format_message_parts, parse_email},
     oauth,
-    telegram::send_notification,
+    telegram::{send_notification, send_notification_with_keyboard},
 };
 
-const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60); // 25 min (RFC 2177 recommends <29 min)
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60); // 10 min (RFC 2177 recommends <29 min)
 const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(5);
 const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5 * 60);
 
@@ -256,15 +258,53 @@ async fn fetch_and_notify(
     while let Some(fetch) = messages.try_next().await? {
         let raw = fetch.body().context("Message has no body")?;
         let parsed = parse_email(raw)?;
-        let text = format_telegram_message(account.label(), &parsed);
-
+        let parts = format_message_parts(account.label(), &parsed);
         let chat_ids = db::get_subscriber_chat_ids(pool, account.id()).await?;
-        for chat_id in &chat_ids {
-            if let Err(e) = send_notification(bot, *chat_id, &text).await {
-                tracing::warn!(
-                    "[{}] Failed to notify chat {chat_id}: {e:#}",
-                    account.label()
-                );
+
+        if parsed.was_truncated() {
+            let body_id = db::store_email_body(
+                pool,
+                parts.header_html(),
+                parsed.body_full(),
+                parts.attachments_html(),
+            )
+            .await?;
+
+            let text = assemble_message(
+                parts.header_html(),
+                parsed.body_preview(),
+                parts.attachments_html(),
+            );
+
+            let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+                "Show more",
+                format!("show:{body_id}"),
+            )]]);
+
+            for chat_id in &chat_ids {
+                if let Err(e) =
+                    send_notification_with_keyboard(bot, *chat_id, &text, keyboard.clone()).await
+                {
+                    tracing::warn!(
+                        "[{}] Failed to notify chat {chat_id}: {e:#}",
+                        account.label()
+                    );
+                }
+            }
+        } else {
+            let text = assemble_message(
+                parts.header_html(),
+                parsed.body_preview(),
+                parts.attachments_html(),
+            );
+
+            for chat_id in &chat_ids {
+                if let Err(e) = send_notification(bot, *chat_id, &text).await {
+                    tracing::warn!(
+                        "[{}] Failed to notify chat {chat_id}: {e:#}",
+                        account.label()
+                    );
+                }
             }
         }
 
